@@ -29,14 +29,17 @@ import Loader from '../../src/components/Loader';
 import ScreenTransition from '../../src/components/ScreenTransition';
 
 import authService from '../../src/services/authService';
+import contentService from '../../src/services/contentService';
 
 export default function ProfileScreen() {
   const router = useRouter();
   const [isLoading, setIsLoading] = React.useState(false);
   const [user, setUser] = React.useState<any>(null);
+  const [watchlist, setWatchlist] = React.useState<any[]>([]);
 
   React.useEffect(() => {
     loadUserProfile();
+    loadWatchlist();
   }, []);
 
   const loadUserProfile = async () => {
@@ -48,6 +51,15 @@ export default function ProfileScreen() {
       console.error('Failed to load user:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const loadWatchlist = async () => {
+    try {
+      const list = await contentService.getWatchlist();
+      setWatchlist(list);
+    } catch (error) {
+      console.error('Failed to load watchlist:', error);
     }
   };
 
@@ -100,7 +112,7 @@ export default function ProfileScreen() {
               {/* Stats */}
               <View style={styles.statsContainer}>
                 <View style={styles.statItem}>
-                  <Text style={styles.statNumber}>24</Text>
+                  <Text style={styles.statNumber}>{watchlist.length}</Text>
                   <Text style={styles.statLabel}>My List</Text>
                 </View>
                 <View style={styles.statDivider} />
@@ -116,6 +128,36 @@ export default function ProfileScreen() {
               </View>
             </SafeAreaView>
           </LinearGradient>
+
+          {/* My List Section */}
+          {watchlist.length > 0 && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>My List</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 15 }}>
+                {watchlist.map((item) => (
+                  <TouchableOpacity 
+                    key={item.id} 
+                    style={styles.watchlistCard}
+                    activeOpacity={0.7}
+                    onPress={() => router.push({
+                      pathname: '/details/[id]',
+                      params: { 
+                        id: item.Content.id,
+                        title: item.Content.title,
+                        subtitle: item.Content.genre,
+                        video: item.Content.videoUrl,
+                        image: item.Content.thumbnailUrl,
+                        likes: '10K',
+                        comments: '500'
+                      }
+                    })}
+                  >
+                    <Image source={{ uri: item.Content.thumbnailUrl }} style={styles.watchlistImage} contentFit="cover" />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
 
           {/* Menu Options */}
           <View style={styles.menuContainer}>
@@ -342,5 +384,20 @@ const styles = StyleSheet.create({
     marginTop: 20,
     fontSize: 12,
     color: '#888',
+  },
+  section: {
+    marginBottom: 30,
+    paddingHorizontal: 20,
+  },
+  watchlistCard: {
+    width: 120,
+    height: 180,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: '#1a1a1a',
+  },
+  watchlistImage: {
+    width: '100%',
+    height: '100%',
   },
 });

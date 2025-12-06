@@ -15,7 +15,8 @@ import {
     StyleSheet,
     Text,
     TouchableOpacity,
-    View
+    View,
+    RefreshControl
 } from 'react-native';
 import { useTheme } from '../../src/context/ThemeContext';
 
@@ -39,6 +40,8 @@ import Loader from '../../src/components/Loader';
 import NotificationPanel from '../../src/components/NotificationPanel';
 import ScreenTransition from '../../src/components/ScreenTransition';
 import contentService from '../../src/services/contentService';
+import { useFocusEffect } from 'expo-router';
+import playbackService from '../../src/services/playbackService';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -53,27 +56,44 @@ export default function HomeScreen() {
   const [trendingData, setTrendingData] = useState<any[]>([]);
   const [newReleasesData, setNewReleasesData] = useState<any[]>([]);
   const [actionData, setActionData] = useState<any[]>([]);
+  const [comedyData, setComedyData] = useState<any[]>([]);
+  const [scifiData, setScifiData] = useState<any[]>([]);
+  const [docData, setDocData] = useState<any[]>([]);
+  const [horrorData, setHorrorData] = useState<any[]>([]);
   const [heroSlides, setHeroSlides] = useState<any[]>([]);
+  const [continueWatchingData, setContinueWatchingData] = useState<any[]>([]);
 
   const scrollViewRef = useRef<ScrollView>(null);
   const notificationAnim = useRef(new Animated.Value(0)).current;
 
-  React.useEffect(() => {
-    loadContent();
-  }, []);
+  useFocusEffect(
+    React.useCallback(() => {
+      loadContent();
+    }, [])
+  );
 
   const loadContent = async () => {
+    // 1. Fetch Home Content (Categories)
     try {
+      console.log('Fetching home content...');
       const categories = await contentService.getHomeContent();
       
       // Map categories to sections
       const trending = categories.find((c: any) => c.title === 'Trending Now')?.Contents || [];
       const newReleases = categories.find((c: any) => c.title === 'New Releases')?.Contents || [];
       const action = categories.find((c: any) => c.title === 'Action Movies')?.Contents || [];
+      const comedy = categories.find((c: any) => c.title === 'Comedy Hits')?.Contents || [];
+      const scifi = categories.find((c: any) => c.title === 'Sci-Fi & Fantasy')?.Contents || [];
+      const docs = categories.find((c: any) => c.title === 'Documentaries')?.Contents || [];
+      const horror = categories.find((c: any) => c.title === 'Horror')?.Contents || [];
       
       setTrendingData(trending.length > 0 ? trending : TRENDING_NOW);
       setNewReleasesData(newReleases.length > 0 ? newReleases : NEW_RELEASES);
       setActionData(action.length > 0 ? action : ACTION_MOVIES);
+      setComedyData(comedy.length > 0 ? comedy : COMEDY_MOVIES);
+      setScifiData(scifi.length > 0 ? scifi : SCIFI_MOVIES);
+      setDocData(docs.length > 0 ? docs : DOCUMENTARIES);
+      setHorrorData(horror.length > 0 ? horror : HORROR_MOVIES);
 
       // Use Trending for Hero Slides if available
       if (trending.length > 0) {
@@ -81,14 +101,27 @@ export default function HomeScreen() {
       } else {
         setHeroSlides(HERO_SLIDES);
       }
-
     } catch (error) {
       console.error('Failed to load home content:', error);
-      // Fallback is already handled by initial state or conditional rendering logic if we want
       setTrendingData(TRENDING_NOW);
       setNewReleasesData(NEW_RELEASES);
       setActionData(ACTION_MOVIES);
+      setComedyData(COMEDY_MOVIES);
+      setScifiData(SCIFI_MOVIES);
+      setDocData(DOCUMENTARIES);
+      setHorrorData(HORROR_MOVIES);
       setHeroSlides(HERO_SLIDES);
+    }
+
+    // 2. Fetch Continue Watching (Independently)
+    try {
+        console.log('Fetching continue watching...');
+        const continueWatching = await playbackService.syncWithBackend();
+        console.log('Continue Watching Data:', JSON.stringify(continueWatching, null, 2));
+        setContinueWatchingData(continueWatching);
+    } catch (error) {
+        console.error('Failed to load continue watching:', error);
+        setContinueWatchingData([]);
     } finally {
       setIsLoading(false);
     }
@@ -205,7 +238,7 @@ export default function HomeScreen() {
     <View style={styles.sectionContainer}>
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>{title}</Text>
-        <TouchableOpacity>
+        <TouchableOpacity onPress={() => router.push({ pathname: '/section/[title]', params: { title } })}>
           <Text style={styles.seeAllText}>See All</Text>
         </TouchableOpacity>
       </View>
@@ -248,8 +281,8 @@ export default function HomeScreen() {
             {/* VIP Badge for some items */}
             {(index % 3 === 0) && (
               <View style={styles.vipBadge}>
-                <Ionicons name="diamond" size={10} color="#000" />
-                <Text style={styles.vipText}>VIP</Text>
+              <Ionicons name="diamond" size={10} color="#000" />
+              <Text style={styles.vipText}>VIP</Text>
               </View>
             )}
             <LinearGradient
@@ -274,6 +307,8 @@ export default function HomeScreen() {
         />
         <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
+
+        
         {/* Header */}
         <SafeAreaView style={styles.headerContainer}>
           <LinearGradient
@@ -322,6 +357,9 @@ export default function HomeScreen() {
           style={styles.scrollView}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{ paddingBottom: 100 }}
+          refreshControl={
+            <RefreshControl refreshing={isLoading} onRefresh={loadContent} tintColor="#E50914" />
+          }
         >
           {/* Hero Carousel */}
           <View style={styles.heroContainer}>
@@ -386,6 +424,11 @@ export default function HomeScreen() {
                   key={index}
                   activeOpacity={0.7}
                   style={[styles.categoryChip, index === 0 && styles.activeCategoryChip]}
+                  onPress={() => {
+                    if (cat !== 'All') {
+                        router.push({ pathname: '/section/[title]', params: { title: cat } });
+                    }
+                  }}
                 >
                   <Text style={[styles.categoryText, index === 0 && styles.activeCategoryText]}>
                     {cat}
@@ -396,80 +439,90 @@ export default function HomeScreen() {
           </View>
 
           {/* Continue Watching */}
-          <View style={styles.sectionContainer}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Continue Watching</Text>
-            </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.listContent}>
-              {CONTINUE_WATCHING.map((item) => (
-                <TouchableOpacity 
-                  key={item.id} 
-                  style={styles.cardContainer} 
-                  activeOpacity={0.7}
-                  onPress={() => router.push({
-                    pathname: '/details/[id]',
-                    params: { 
-                      id: item.id,
-                      title: item.title,
-                      subtitle: 'Continue Watching',
-                      video: '', // Add video link if available in mock data
-                      image: item.image,
-                      likes: '5K',
-                      comments: '200'
-                    }
-                  })}
-                >
-                  <Image
-                    source={{ uri: item.image }}
-                    style={styles.cardImage}
-                    contentFit="cover"
-                  />
-                  {/* Progress Bar Overlay */}
-                  <View style={{
-                    position: 'absolute',
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    height: 4,
-                    backgroundColor: 'rgba(255,255,255,0.3)'
-                  }}>
-                    <View style={{
-                      width: `${item.progress * 100}%`,
-                      height: '100%',
-                      backgroundColor: '#E50914'
-                    }} />
-                  </View>
+          {continueWatchingData.length > 0 && (
+            <View style={styles.sectionContainer}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Continue Watching</Text>
+              </View>
+              <ScrollView 
+                horizontal 
+                showsHorizontalScrollIndicator={false} 
+                contentContainerStyle={styles.listContent}
+              >
+                {continueWatchingData.map((item) => {
+                  if (!item.Content) return null;
+                  return (
+                    <TouchableOpacity 
+                        key={item.id} 
+                        style={styles.cardContainer} 
+                        activeOpacity={0.7}
+                        onPress={() => router.push({
+                        pathname: '/details/[id]',
+                        params: { 
+                            id: item.Content.id,
+                            title: item.Content.title,
+                            subtitle: 'Continue Watching',
+                            video: item.Content.videoUrl,
+                            image: item.Content.thumbnailUrl,
+                            likes: '5K',
+                            comments: '200',
+                            position: item.progress.toString()
+                        }
+                        })}
+                    >
+                        <Image
+                        source={{ uri: item.Content.thumbnailUrl }}
+                        style={styles.cardImage}
+                        contentFit="cover"
+                        />
+                        {/* Progress Bar Overlay */}
+                        <View style={{
+                        position: 'absolute',
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        height: 4,
+                        backgroundColor: 'rgba(255,255,255,0.3)'
+                        }}>
+                        <View style={{
+                            width: `${Math.min((item.progress / 30000) * 100, 100)}%`, 
+                            height: '100%',
+                            backgroundColor: '#E50914'
+                        }} />
+                        </View>
 
-                   {/* Play Icon Overlay */}
-                   <View style={{
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: [{ translateX: -15 }, { translateY: -15 }],
-                    width: 30,
-                    height: 30,
-                    borderRadius: 15,
-                    backgroundColor: 'rgba(0,0,0,0.6)',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    borderWidth: 1,
-                    borderColor: '#fff'
-                  }}>
-                    <Ionicons name="play" size={16} color="#fff" style={{ marginLeft: 2 }} />
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
+                        {/* Play Icon Overlay */}
+                        <View style={{
+                        position: 'absolute',
+                        top: '50%',
+                        left: '50%',
+                        transform: [{ translateX: -15 }, { translateY: -15 }],
+                        width: 30,
+                        height: 30,
+                        borderRadius: 15,
+                        backgroundColor: 'rgba(0,0,0,0.6)',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        borderWidth: 1,
+                        borderColor: '#fff'
+                        }}>
+                        <Ionicons name="play" size={16} color="#fff" style={{ marginLeft: 2 }} />
+                        </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          )}
 
           {/* Sections */}
           {renderSection('Trending Now', trendingData)}
           {renderSection('New Releases', newReleasesData)}
           {renderSection('Action Movies', actionData)}
-          {renderSection('Comedy Hits', COMEDY_MOVIES)}
-          {renderSection('Sci-Fi & Fantasy', SCIFI_MOVIES)}
-          {renderSection('Documentaries', DOCUMENTARIES)}
-          {renderSection('Horror', HORROR_MOVIES)}
+          {renderSection('Comedy Hits', comedyData)}
+          {renderSection('Sci-Fi & Fantasy', scifiData)}
+          {renderSection('Documentaries', docData)}
+          {renderSection('Horror', horrorData)}
 
         </ScrollView>
       </View>

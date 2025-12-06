@@ -25,4 +25,17 @@ api.interceptors.request.use(
   }
 );
 
+// Add a response interceptor to handle 401 errors (Auto-logout)
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response && error.response.status === 401) {
+      // Token expired or invalid - Clear storage
+      await AsyncStorage.removeItem('token');
+      await AsyncStorage.removeItem('user');
+    }
+    return Promise.reject(error);
+  }
+);
+
 export default api;

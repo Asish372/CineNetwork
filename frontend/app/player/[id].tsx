@@ -1,22 +1,25 @@
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
-import { ResizeMode } from 'expo-av';
-import VideoPlayer from 'expo-video-player';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import Slider from '@react-native-community/slider';
+import { ResizeMode, Video, AVPlaybackStatus } from 'expo-av';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import React, { useEffect, useState, useRef } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-    Alert,
-    Dimensions,
-    StatusBar,
-    StyleSheet,
-    View,
-    useWindowDimensions,
-    Text,
-    TouchableOpacity,
-    Modal,
-    FlatList
+  ActivityIndicator,
+  Animated,
+  BackHandler,
+  Dimensions,
+  StatusBar,
+  StyleSheet,
+  Text,
+  Alert,
+  TouchableWithoutFeedback,
+  View,
+  Vibration,
 } from 'react-native';
-import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, GestureHandlerRootView, TouchableOpacity } from 'react-native-gesture-handler';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import contentService from '../../src/services/contentService';
 import playbackService from '../../src/services/playbackService';
 
@@ -25,272 +28,349 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 export default function PlayerScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const { width, height } = useWindowDimensions();
-  const videoRef = useRef<any>(null);
-
-  // Fallback data
-  const {
-    id = '0',
-    title: initialTitle,
-    subtitle: initialSubtitle,
-    video: initialVideo,
-    position = '0',
-  } = params;
-
-  useEffect(() => {
-    console.log('PlayerScreen params:', params);
-    console.log('PlayerScreen received position:', position);
-  }, [position]);
+  const videoRef = useRef<Video>(null);
   
+  // Params
+  const {
+    id,
+    title: initialTitle,
+    video: initialVideo,
+    position: initialPosition,
+  } = params;
+  
+  const contentId = Array.isArray(id) ? id[0] : id;
+
   // State
-  const [isFullscreen, setIsFullscreen] = useState(true);
-  const [showFeedback, setShowFeedback] = useState(false);
-  const [feedbackText, setFeedbackText] = useState('');
   const [videoUrl, setVideoUrl] = useState(initialVideo as string);
   const [videoTitle, setVideoTitle] = useState(initialTitle as string);
+  const [status, setStatus] = useState<AVPlaybackStatus | null>(null);
+  const [showControls, setShowControls] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false); // Start in false to ensure sync
+  const [orientation, setOrientation] = useState(ScreenOrientation.Orientation.PORTRAIT_UP);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragPosition, setDragPosition] = useState(0);
   
-  // Settings State
-  const [showSettings, setShowSettings] = useState(false);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
-  const [videoQuality, setVideoQuality] = useState('Auto');
-  const [activeSettingTab, setActiveSettingTab] = useState<'Speed' | 'Quality'>('Speed');
+  // Animation
+  const controlsOpacity = useRef(new Animated.Value(1)).current;
+  const controlsTimer = useRef<NodeJS.Timeout | null>(null);
 
-  const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
-  const qualities = ['Auto', '360p', '480p', '720p', '1080p', '4k'];
-
+  // Load Content if URL missing
   useEffect(() => {
-    if (!videoUrl && id) {
+    if (!videoUrl && contentId) {
       loadContentDetails();
     }
-  }, [id, videoUrl]);
+  }, [contentId, videoUrl]);
 
   const loadContentDetails = async () => {
     try {
-      const content = await contentService.getContentById(id as string);
+      const content = await contentService.getContentById(contentId as string);
       if (content) {
         setVideoUrl(content.videoUrl);
         setVideoTitle(content.title);
       }
     } catch (error) {
-      console.log('Failed to load content details from backend, using fallback params:', error);
+      console.log('Failed to load content details:', error);
     }
   };
 
+  // Orientation & Lifecycle
   useEffect(() => {
-    // Lock to landscape on mount for better viewing experience
-    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    // Force Landscape on mount
+    const lockLandscape = async () => {
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+      // Check immediately after locking
+      const current = await ScreenOrientation.getOrientationAsync();
+      const isLandscape = 
+        current === ScreenOrientation.Orientation.LANDSCAPE_LEFT || 
+        current === ScreenOrientation.Orientation.LANDSCAPE_RIGHT;
+      setIsFullscreen(isLandscape);
+    };
+    lockLandscape();
+
+    // Listen for orientation changes
+    const subscription = ScreenOrientation.addOrientationChangeListener((evt) => {
+      console.log('Orientation changed:', evt.orientationInfo.orientation);
+      const isLandscape = 
+        evt.orientationInfo.orientation === ScreenOrientation.Orientation.LANDSCAPE_LEFT || 
+        evt.orientationInfo.orientation === ScreenOrientation.Orientation.LANDSCAPE_RIGHT;
+      setIsFullscreen(isLandscape);
+      setOrientation(evt.orientationInfo.orientation);
+    });
+
+    // Reset controls timer
+    resetControlsTimer();
+
+    // Back Handler
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleExit();
+      return true;
+    });
+
     return () => {
+      ScreenOrientation.removeOrientationChangeListener(subscription);
+      if (controlsTimer.current) clearTimeout(controlsTimer.current);
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+      backHandler.remove();
     };
   }, []);
 
-  const handleExitFullscreen = async () => {
-    if (videoRef.current) {
+  // Controls Visibility Logic
+  const resetControlsTimer = () => {
+    if (controlsTimer.current) clearTimeout(controlsTimer.current);
+    setShowControls(true);
+    Animated.timing(controlsOpacity, {
+      toValue: 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+
+    controlsTimer.current = setTimeout(() => {
+      if (status?.isLoaded && status.isPlaying) {
+        hideControls();
+      }
+    }, 4000) as unknown as NodeJS.Timeout;
+  };
+
+  const hideControls = () => {
+    Animated.timing(controlsOpacity, {
+      toValue: 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start(() => setShowControls(false));
+  };
+
+  const toggleControls = () => {
+    if (showControls) {
+      hideControls();
+    } else {
+      resetControlsTimer();
+    }
+  };
+
+  // Playback Logic
+  const togglePlay = async () => {
+    if (!videoRef.current) return;
+    if (status?.isLoaded) {
+      if (status.isPlaying) {
+        await videoRef.current.pauseAsync();
+        resetControlsTimer(); // Keep controls visible when paused
+      } else {
+        await videoRef.current.playAsync();
+        resetControlsTimer();
+      }
+    }
+  };
+
+  const handleSeek = async (value: number) => {
+    if (!videoRef.current || !status?.isLoaded) return;
+    resetControlsTimer();
+    await videoRef.current.setPositionAsync(value);
+  };
+
+  const skip = async (amount: number) => {
+    if (!videoRef.current || !status?.isLoaded) return;
+    resetControlsTimer();
+    const newPos = status.positionMillis + amount;
+    await videoRef.current.setPositionAsync(newPos);
+  };
+
+  // Orientation Toggle
+  const toggleOrientation = async () => {
+    // Haptic Feedback
+    Vibration.vibrate(50);
+
+    try {
+      if (isFullscreen) {
+        // Switch to Portrait
+        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+      } else {
+        // Switch to Landscape (Left)
+        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE_LEFT);
+      }
+    } catch (error) {
+      console.log("Orientation toggle error:", error);
+    }
+  };
+
+  const handleExit = async () => {
+    // Save progress
+    if (videoRef.current && status?.isLoaded) {
         try {
-            const status = await videoRef.current.getStatusAsync();
-            if (status.isLoaded) {
-                console.log('Saving position on exit:', status.positionMillis);
-                playbackService.savePosition(id as string, status.positionMillis);
-            }
+            await playbackService.savePosition(contentId as string, status.positionMillis);
         } catch (e) {
-            console.log('Error saving position:', e);
+            console.error("Failed to save progress", e);
         }
     }
     router.back();
   };
 
-  const handleSeek = async (amount: number) => {
-    if (videoRef.current) {
-        try {
-            const status = await videoRef.current.getStatusAsync();
-            if (status.isLoaded) {
-                const newPosition = status.positionMillis + amount;
-                await videoRef.current.setPositionAsync(newPosition);
-                setFeedbackText(amount > 0 ? '+10s' : '-10s');
-                setShowFeedback(true);
-                setTimeout(() => setShowFeedback(false), 1000);
-            }
-        } catch (e) {
-            console.log('Seek error:', e);
-        }
-    }
+  // Format Time
+  const formatTime = (millis: number) => {
+    if (!millis) return "00:00";
+    const totalSeconds = Math.floor(millis / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes < 10 ? '0' : ''}${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
   };
 
-  const changeSpeed = async (speed: number) => {
-      setPlaybackSpeed(speed);
-      if (videoRef.current) {
-          await videoRef.current.setRateAsync(speed, true);
-      }
-      setShowSettings(false);
-  };
-
-  const changeQuality = (quality: string) => {
-      setVideoQuality(quality);
-      // Logic to switch video source would go here
-      console.log('Switching quality to:', quality);
-      setShowSettings(false);
-  };
-
+  // Gestures
   const doubleTapLeft = Gesture.Tap()
     .numberOfTaps(2)
     .onEnd(() => {
-        handleSeek(-10000);
+        skip(-10000);
     })
     .runOnJS(true);
 
   const doubleTapRight = Gesture.Tap()
     .numberOfTaps(2)
     .onEnd(() => {
-        handleSeek(10000);
+        skip(10000);
+    })
+    .runOnJS(true);
+
+  const singleTap = Gesture.Tap()
+    .onEnd(() => {
+        toggleControls();
     })
     .runOnJS(true);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-    <View style={styles.container}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000' }}>
       <StatusBar hidden={true} />
       
-      <VideoPlayer
-        videoProps={{
-          ref: videoRef,
-          shouldPlay: false,
-          resizeMode: ResizeMode.CONTAIN,
-          source: {
-            uri: videoUrl || "https://www.w3schools.com/html/mov_bbb.mp4" 
-          },
-          isMuted: false,
-          onLoad: async () => {
-            if (position) {
-                const seekTime = parseInt(position as string, 10);
-                if (videoRef.current) {
-                    await videoRef.current.playFromPositionAsync(seekTime);
-                }
-            } else {
-                if (videoRef.current) {
-                    await videoRef.current.playAsync();
-                }
-            }
-          }
-        }}
-        fullscreen={{
-          inFullscreen: true,
-          enterFullscreen: async () => {},
-          exitFullscreen: handleExitFullscreen,
-        }}
-        style={{
-          videoBackgroundColor: 'black',
-          height: height,
-          width: width,
-          paddingBottom: 40, // Lift controls up
-        }}
-        header={
-            <View style={styles.header}>
-                <TouchableOpacity onPress={() => router.back()} style={{ padding: 10 }}>
-                    <Ionicons name="arrow-back" size={24} color="white" />
-                </TouchableOpacity>
-                
-                <View style={styles.headerRight}>
-                    <TouchableOpacity 
-                        onPress={() => {
-                            setActiveSettingTab('Speed');
-                            setShowSettings(true);
-                        }} 
-                        style={{ padding: 10, marginRight: 10 }}
-                    >
-                        <MaterialIcons name="speed" size={24} color="white" />
-                    </TouchableOpacity>
+      <View style={styles.container}>
+        <Video
+          ref={videoRef}
+          source={{ uri: videoUrl || "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4" }}
+          style={styles.video}
+          resizeMode={ResizeMode.CONTAIN}
+          shouldPlay
+          onPlaybackStatusUpdate={setStatus}
+          onLoad={async () => {
+             if (initialPosition) {
+                 await videoRef.current?.playFromPositionAsync(parseInt(initialPosition as string, 10));
+             }
+          }}
+        />
 
-                    <TouchableOpacity 
-                        onPress={() => {
-                            setActiveSettingTab('Quality');
-                            setShowSettings(true);
-                        }} 
-                        style={{ padding: 10 }}
-                    >
-                        <MaterialIcons name="high-quality" size={24} color="white" />
-                    </TouchableOpacity>
-                </View>
-            </View>
-        }
-      />
-
-      {/* Gesture Overlays */}
-      <GestureDetector gesture={doubleTapLeft}>
-        <View style={styles.leftGestureArea} />
-      </GestureDetector>
-      <GestureDetector gesture={doubleTapRight}>
-        <View style={styles.rightGestureArea} />
-      </GestureDetector>
-
-      {/* Feedback Overlay */}
-      {showFeedback && (
-        <View style={styles.feedbackOverlay}>
-            <Text style={styles.feedbackText}>{feedbackText}</Text>
+        {/* Gesture Layer */}
+        <View style={StyleSheet.absoluteFill}>
+            <GestureDetector gesture={Gesture.Exclusive(doubleTapLeft, doubleTapRight, singleTap)}>
+                <View style={styles.gestureArea} />
+            </GestureDetector>
         </View>
-      )}
 
-      {/* Settings Modal */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={showSettings}
-        onRequestClose={() => setShowSettings(false)}
-      >
-        <TouchableOpacity 
-            style={styles.modalOverlay} 
-            activeOpacity={1} 
-            onPress={() => setShowSettings(false)}
+        {/* Controls Overlay */}
+        <Animated.View 
+            style={[
+                StyleSheet.absoluteFill, 
+                { opacity: controlsOpacity, zIndex: 100, elevation: 100 },
+                !showControls && { pointerEvents: 'none' }
+            ]}
+            pointerEvents={showControls ? "box-none" : "none"}
         >
-            <View style={styles.settingsContainer}>
-                <View style={styles.settingsHeader}>
-                    <TouchableOpacity onPress={() => setActiveSettingTab('Speed')}>
-                        <Text style={[styles.tabText, activeSettingTab === 'Speed' && styles.activeTab]}>Speed</Text>
+            <LinearGradient
+                colors={['rgba(0,0,0,0.6)', 'transparent', 'rgba(0,0,0,0.8)']}
+                style={styles.controlsContainer}
+            >
+                <SafeAreaView style={styles.controlsContent}>
+                {/* Top Bar */}
+                <View style={styles.topBar}>
+                    <TouchableOpacity onPress={handleExit} style={styles.iconButton} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                        <Ionicons name="arrow-back" size={28} color="#fff" />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setActiveSettingTab('Quality')}>
-                        <Text style={[styles.tabText, activeSettingTab === 'Quality' && styles.activeTab]}>Quality</Text>
-                    </TouchableOpacity>
+                    <Text style={styles.videoTitle} numberOfLines={1}>{videoTitle}</Text>
+                    <View style={{ width: 40 }} /> 
                 </View>
-                
-                <View style={styles.settingsContent}>
-                    {activeSettingTab === 'Speed' ? (
-                        <FlatList
-                            data={speeds}
-                            keyExtractor={(item) => item.toString()}
-                            renderItem={({ item }) => (
-                                <TouchableOpacity 
-                                    style={styles.settingOption} 
-                                    onPress={() => changeSpeed(item)}
-                                >
-                                    <Text style={[styles.optionText, playbackSpeed === item && styles.selectedOption]}>
-                                        {item}x
-                                    </Text>
-                                    {playbackSpeed === item && <Ionicons name="checkmark" size={20} color="#E50914" />}
-                                </TouchableOpacity>
-                            )}
-                        />
-                    ) : (
-                        <FlatList
-                            data={qualities}
-                            keyExtractor={(item) => item}
-                            renderItem={({ item }) => (
-                                <TouchableOpacity 
-                                    style={styles.settingOption} 
-                                    onPress={() => changeQuality(item)}
-                                >
-                                    <Text style={[styles.optionText, videoQuality === item && styles.selectedOption]}>
-                                        {item}
-                                    </Text>
-                                    {videoQuality === item && <Ionicons name="checkmark" size={20} color="#E50914" />}
-                                </TouchableOpacity>
-                            )}
-                        />
-                    )}
-                </View>
-            </View>
-        </TouchableOpacity>
-      </Modal>
 
-    </View>
+                {/* Center Controls */}
+                <View style={styles.centerControls}>
+                    <TouchableOpacity onPress={() => skip(-10000)} style={styles.skipButton}>
+                        <MaterialIcons name="replay-10" size={40} color="#fff" />
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity onPress={togglePlay} style={styles.playButton}>
+                        <Ionicons 
+                            name={status?.isLoaded && status.isPlaying ? "pause" : "play"} 
+                            size={50} 
+                            color="#000" 
+                            style={{ marginLeft: status?.isLoaded && status.isPlaying ? 0 : 4 }}
+                        />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity onPress={() => skip(10000)} style={styles.skipButton}>
+                        <MaterialIcons name="forward-10" size={40} color="#fff" />
+                    </TouchableOpacity>
+                </View>
+
+                {/* Bottom Bar */}
+                <View style={styles.bottomBar}>
+                    <View style={styles.sliderRow}>
+                        <Text style={styles.timeText}>
+                            {formatTime(isDragging ? dragPosition : (status?.isLoaded ? status.positionMillis : 0))}
+                        </Text>
+                        <Slider
+                            style={styles.slider}
+                            minimumValue={0}
+                            maximumValue={status?.isLoaded ? status.durationMillis || 0 : 0}
+                            value={isDragging ? dragPosition : (status?.isLoaded ? status.positionMillis : 0)}
+                            onSlidingStart={() => {
+                                setIsDragging(true);
+                                if (controlsTimer.current) clearTimeout(controlsTimer.current);
+                            }}
+                            onValueChange={(value) => {
+                                setDragPosition(value);
+                            }}
+                            onSlidingComplete={async (value) => {
+                                await handleSeek(value);
+                                setIsDragging(false);
+                            }}
+                            minimumTrackTintColor="#E50914"
+                            maximumTrackTintColor="rgba(255,255,255,0.3)"
+                            thumbTintColor="#E50914"
+                        />
+                        <Text style={styles.timeText}>
+                            {status?.isLoaded ? formatTime(status.durationMillis || 0) : "00:00"}
+                        </Text>
+                    </View>
+                    
+                    <View style={styles.bottomActions}>
+                         <TouchableOpacity style={styles.actionButton}>
+                            <MaterialIcons name="subtitles" size={20} color="#fff" />
+                            <Text style={styles.actionText}>Audio & Subs</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity style={styles.actionButton}>
+                            <MaterialIcons name="hd" size={20} color="#fff" />
+                            <Text style={styles.actionText}>Quality</Text>
+                        </TouchableOpacity>
+                        
+                        <TouchableOpacity 
+                            onPress={toggleOrientation} 
+                            style={styles.iconButton}
+                            hitSlop={{top: 20, bottom: 20, left: 20, right: 20}}
+                        >
+                            <MaterialIcons 
+                                name={isFullscreen ? "fullscreen-exit" : "fullscreen"} 
+                                size={28} 
+                                color="#fff" 
+                            />
+                        </TouchableOpacity>
+                    </View>
+                </View>
+
+            </SafeAreaView>
+            </LinearGradient>
+        </Animated.View>
+
+        {/* Loading Indicator */}
+        {(!status?.isLoaded || status.isBuffering) && (
+            <View style={styles.loadingOverlay}>
+                <ActivityIndicator size="large" color="#E50914" />
+            </View>
+        )}
+
+      </View>
     </GestureHandlerRootView>
   );
 }
@@ -300,103 +380,109 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
     justifyContent: 'center',
-  },
-  header: {
-    position: 'absolute',
-    top: 10,
-    left: 10,
-    right: 10,
-    zIndex: 100,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
   },
-  headerRight: {
-      flexDirection: 'row',
+  video: {
+    width: '100%',
+    height: '100%',
   },
-  leftGestureArea: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: 0,
-    width: '30%',
-    zIndex: 10,
+  gestureArea: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'transparent',
   },
-  rightGestureArea: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    right: 0,
-    width: '30%',
-    zIndex: 10,
+  controlsContainer: {
+    flex: 1,
   },
-  feedbackOverlay: {
-    position: 'absolute',
-    top: '50%',
-    left: '50%',
-    transform: [{ translateX: -50 }, { translateY: -50 }],
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    padding: 20,
-    borderRadius: 10,
-    zIndex: 20,
+  controlsContent: {
+    flex: 1,
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
   },
-  feedbackText: {
-    color: 'white',
-    fontSize: 24,
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  videoTitle: {
+    color: '#fff',
+    fontSize: 16,
     fontWeight: 'bold',
+    flex: 1,
+    textAlign: 'center',
+    marginHorizontal: 20,
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
   },
-  modalOverlay: {
-      flex: 1,
-      backgroundColor: 'rgba(0,0,0,0.5)',
-      justifyContent: 'center',
-      alignItems: 'center',
+  iconButton: {
+    padding: 8,
   },
-  settingsContainer: {
-      width: 300,
-      backgroundColor: '#1a1a1a',
-      borderRadius: 10,
-      padding: 10,
-      maxHeight: 400,
+  centerControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 40,
   },
-  settingsHeader: {
-      flexDirection: 'row',
-      justifyContent: 'space-around',
-      borderBottomWidth: 1,
-      borderBottomColor: '#333',
-      paddingBottom: 10,
-      marginBottom: 10,
+  playButton: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
   },
-  tabText: {
-      color: '#888',
-      fontSize: 16,
-      fontWeight: 'bold',
-      padding: 5,
+  skipButton: {
+    padding: 10,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 30,
   },
-  activeTab: {
-      color: '#E50914',
-      borderBottomWidth: 2,
-      borderBottomColor: '#E50914',
+  bottomBar: {
+    gap: 10,
   },
-  settingsContent: {
-      maxHeight: 300,
+  sliderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
-  settingOption: {
+  slider: {
+    flex: 1,
+    height: 40,
+  },
+  timeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    width: 45,
+    textAlign: 'center',
+  },
+  bottomActions: {
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'center',
-      paddingVertical: 12,
       paddingHorizontal: 10,
-      borderBottomWidth: 1,
-      borderBottomColor: '#333',
   },
-  optionText: {
+  actionButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+  },
+  actionText: {
       color: '#fff',
-      fontSize: 16,
+      fontSize: 12,
+      fontWeight: '600',
   },
-  selectedOption: {
-      color: '#E50914',
-      fontWeight: 'bold',
-  }
+  loadingOverlay: {
+      ...StyleSheet.absoluteFillObject,
+      justifyContent: 'center',
+      alignItems: 'center',
+      zIndex: 5,
+      pointerEvents: 'none',
+  },
 });
-
-

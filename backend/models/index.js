@@ -4,6 +4,7 @@ const Otp = require('./Otp');
 const Content = require('./Content');
 const Category = require('./Category');
 const UserInteraction = require('./UserInteraction');
+const WatchHistory = require('./WatchHistory');
 
 // Define Associations
 User.hasMany(UserInteraction, { foreignKey: 'userId' });
@@ -25,5 +26,6 @@ module.exports = {
   Content,
   Category,
   UserInteraction,
-  ContentCategory
+  ContentCategory,
+  WatchHistory
 };

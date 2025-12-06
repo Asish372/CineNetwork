@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import { ResizeMode, Video } from 'expo-av';
-import VideoPlayer from 'expo-video-player';
+
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
+import contentService from '../../src/services/contentService';
 import playbackService from '../../src/services/playbackService';
 import React, { useRef, useState, useCallback } from 'react';
 import {
@@ -29,8 +30,34 @@ export default function DetailsScreen() {
   const [showPlayer, setShowPlayer] = useState(false);
   const playbackPositionRef = useRef(0);
   const [shouldPlayInline, setShouldPlayInline] = useState(false);
+  const [isInWatchlist, setIsInWatchlist] = useState(false);
 
+  React.useEffect(() => {
+    checkWatchlist();
+  }, [params.id]);
 
+  const checkWatchlist = async () => {
+    try {
+      const status = await contentService.checkWatchlistStatus(params.id as string);
+      setIsInWatchlist(status.isInWatchlist);
+    } catch (error) {
+      console.log('Error checking watchlist:', error);
+    }
+  };
+
+  const toggleWatchlist = async () => {
+    try {
+      if (isInWatchlist) {
+        await contentService.removeFromWatchlist(params.id as string);
+        setIsInWatchlist(false);
+      } else {
+        await contentService.addToWatchlist(params.id as string);
+        setIsInWatchlist(true);
+      }
+    } catch (error) {
+      console.error('Error toggling watchlist:', error);
+    }
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -79,10 +106,6 @@ export default function DetailsScreen() {
     { id: 3, title: 'Redemption', duration: '48m', image: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?w=400&q=80', desc: 'A chance to make things right.' },
   ];
 
-
-
-
-
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
@@ -92,51 +115,51 @@ export default function DetailsScreen() {
         <View style={styles.heroContainer}>
           {showPlayer ? (
 
-             <VideoPlayer
-                videoProps={{
-                  ref: playerVideoRef,
-                  shouldPlay: shouldPlayInline,
-                  resizeMode: ResizeMode.CONTAIN,
-                  source: {
-                    uri: video as string || "https://www.w3schools.com/html/mov_bbb.mp4"
-                  },
-                  isMuted: false,
-                }}
-                fullscreen={{
-                  inFullscreen: false,
-                  enterFullscreen: async () => {
-                    let currentPosition = 0;
-                    if (playerVideoRef.current) {
-                        try {
+             <View style={{ width: width, height: 250 }}>
+                <Video
+                  ref={playerVideoRef}
+                  source={{ uri: video as string || "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4" }}
+                  style={{ width: '100%', height: '100%' }}
+                  resizeMode={ResizeMode.CONTAIN}
+                  shouldPlay={shouldPlayInline}
+                  isMuted={false}
+                  useNativeControls
+                  onPlaybackStatusUpdate={(status) => {
+                      if (status.isLoaded && status.didJustFinish) {
+                          setShowPlayer(false);
+                      }
+                  }}
+                />
+                <TouchableOpacity 
+                    style={{
+                        position: 'absolute',
+                        top: 10,
+                        right: 10,
+                        padding: 8,
+                        backgroundColor: 'rgba(0,0,0,0.5)',
+                        borderRadius: 20,
+                    }}
+                    onPress={async () => {
+                        let currentPosition = 0;
+                        if (playerVideoRef.current) {
                             const status = await playerVideoRef.current.getStatusAsync();
                             if (status.isLoaded) {
                                 currentPosition = status.positionMillis;
                             }
-                        } catch (e) {
-                            console.log('Error getting status:', e);
                         }
-                    }
-                    
-                    console.log('Entering fullscreen with position:', currentPosition);
-                    router.push({
-                      pathname: '/player/[id]',
-                      params: { 
-                        id: params.id as string, 
-                        ...params,
-                        position: currentPosition.toString() 
-                      }
-                    });
-                  },
-                  exitFullscreen: async () => {
-                     // Optional: Handle exit fullscreen logic
-                  },
-                }}
-                style={{
-                  videoBackgroundColor: 'black',
-                  height: 250,
-                  width: width,
-                }}
-              />
+                        router.push({
+                            pathname: '/player/[id]',
+                            params: { 
+                                id: params.id as string, 
+                                ...params,
+                                position: currentPosition.toString() 
+                            }
+                        });
+                    }}
+                >
+                    <Ionicons name="expand" size={20} color="#fff" />
+                </TouchableOpacity>
+             </View>
           ) : (
             <>
               {video ? (
@@ -265,9 +288,11 @@ export default function DetailsScreen() {
 
           {/* Action Row */}
           <View style={styles.actionRow}>
-            <TouchableOpacity style={styles.actionItem}>
-              <Ionicons name="add" size={24} color="#fff" />
-              <Text style={styles.actionLabel}>My List</Text>
+            <TouchableOpacity style={styles.actionItem} onPress={toggleWatchlist}>
+              <Ionicons name={isInWatchlist ? "checkmark-circle" : "add"} size={24} color={isInWatchlist ? "#E50914" : "#fff"} />
+              <Text style={[styles.actionLabel, isInWatchlist && { color: '#E50914' }]}>
+                  {isInWatchlist ? 'Saved' : 'My List'}
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.actionItem}>
               <Ionicons name="thumbs-up-outline" size={24} color="#fff" />

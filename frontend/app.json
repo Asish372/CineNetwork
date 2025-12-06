@@ -3,7 +3,7 @@
     "name": "Cine Network",
     "slug": "MyOttApp",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/splash-logo.png",
     "scheme": "Cine_Network",
     "userInterfaceStyle": "automatic",

@@ -35,18 +35,34 @@ import ScreenTransition from '../../src/components/ScreenTransition';
 
 import { TRENDING_NOW } from '../../src/data/mockData';
 
+import contentService from '../../src/services/contentService';
+
 export default function SearchScreen() {
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Debounce Search
   React.useEffect(() => {
-    setIsLoading(true);
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, []);
+    const delayDebounceFn = setTimeout(async () => {
+      if (searchQuery.length > 2) {
+        setIsLoading(true);
+        try {
+          const results = await contentService.searchContent(searchQuery);
+          setSearchResults(results);
+        } catch (error) {
+          console.error('Search failed:', error);
+        } finally {
+          setIsLoading(false);
+        }
+      } else {
+        setSearchResults([]);
+      }
+    }, 300); // Faster debounce for "suggestion" feel
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchQuery]);
 
   const handleTagPress = (tag: string) => {
     setSearchQuery(tag);
@@ -80,75 +96,114 @@ export default function SearchScreen() {
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
             
-            {/* Popular Searches */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Popular Searches</Text>
-              <View style={styles.tagsContainer}>
-                {POPULAR_SEARCHES.map((tag, index) => (
-                  <TouchableOpacity 
-                    key={index} 
-                    style={styles.tag}
-                    onPress={() => handleTagPress(tag)}
-                  >
-                    <Text style={styles.tagText}>{tag}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
+            {/* Search Results */}
+            {searchQuery.length > 2 ? (
+                <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>Results for "{searchQuery}"</Text>
+                    {searchResults.length === 0 && !isLoading ? (
+                        <Text style={{ color: '#888', textAlign: 'center', marginTop: 20 }}>No results found.</Text>
+                    ) : (
+                        <View style={styles.resultsGrid}>
+                            {searchResults.map((item) => (
+                                <TouchableOpacity 
+                                    key={item.id} 
+                                    style={styles.resultCard}
+                                    activeOpacity={0.7}
+                                    onPress={() => router.push({
+                                        pathname: '/details/[id]',
+                                        params: { 
+                                            id: item.id,
+                                            title: item.title,
+                                            subtitle: item.genre || 'Movie',
+                                            video: item.videoUrl,
+                                            image: item.thumbnailUrl,
+                                            likes: '10K',
+                                            comments: '500'
+                                        }
+                                    })}
+                                >
+                                    <Image source={{ uri: item.thumbnailUrl }} style={styles.resultImage} contentFit="cover" />
+                                    <LinearGradient colors={['transparent', 'rgba(0,0,0,0.9)']} style={styles.cardGradient}>
+                                        <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
+                                    </LinearGradient>
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+                    )}
+                </View>
+            ) : (
+                <>
+                    {/* Popular Searches */}
+                    <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>Popular Searches</Text>
+                    <View style={styles.tagsContainer}>
+                        {POPULAR_SEARCHES.map((tag, index) => (
+                        <TouchableOpacity 
+                            key={index} 
+                            style={styles.tag}
+                            onPress={() => handleTagPress(tag)}
+                        >
+                            <Text style={styles.tagText}>{tag}</Text>
+                        </TouchableOpacity>
+                        ))}
+                    </View>
+                    </View>
 
-            {/* Recommended for You */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Recommended for You</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 15 }}>
-                {TRENDING_NOW.map((item) => (
-                  <TouchableOpacity 
-                    key={item.id} 
-                    style={styles.recommendedCard}
-                    activeOpacity={0.7}
-                    onPress={() => router.push({
-                      pathname: '/details/[id]',
-                      params: { 
-                        id: item.id,
-                        title: item.title,
-                        subtitle: 'Recommended',
-                        video: 'https://videos.pexels.com/video-files/3195394/3195394-uhd_2560_1440_25fps.mp4',
-                        image: item.image,
-                        likes: '9.9K',
-                        comments: '666'
-                      }
-                    })}
-                  >
-                    <Image source={{ uri: item.image }} style={styles.recommendedImage} contentFit="cover" />
-                    <LinearGradient colors={['transparent', 'rgba(0,0,0,0.9)']} style={styles.cardGradient}>
-                      <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
-                    </LinearGradient>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
+                    {/* Recommended for You */}
+                    <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>Recommended for You</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 15 }}>
+                        {TRENDING_NOW.map((item) => (
+                        <TouchableOpacity 
+                            key={item.id} 
+                            style={styles.recommendedCard}
+                            activeOpacity={0.7}
+                            onPress={() => router.push({
+                            pathname: '/details/[id]',
+                            params: { 
+                                id: item.id,
+                                title: item.title,
+                                subtitle: 'Recommended',
+                                video: 'https://videos.pexels.com/video-files/3195394/3195394-uhd_2560_1440_25fps.mp4',
+                                image: item.image,
+                                likes: '9.9K',
+                                comments: '666'
+                            }
+                            })}
+                        >
+                            <Image source={{ uri: item.image }} style={styles.recommendedImage} contentFit="cover" />
+                            <LinearGradient colors={['transparent', 'rgba(0,0,0,0.9)']} style={styles.cardGradient}>
+                            <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
+                            </LinearGradient>
+                        </TouchableOpacity>
+                        ))}
+                    </ScrollView>
+                    </View>
 
-            {/* Categories */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Browse Categories</Text>
-              <View style={styles.categoriesGrid}>
-                {CATEGORIES.map((category) => (
-                  <TouchableOpacity 
-                    key={category.id} 
-                    style={styles.categoryCard} 
-                    activeOpacity={0.8}
-                    onPress={() => handleTagPress(category.name)}
-                  >
-                    <Image source={{ uri: category.image }} style={styles.categoryImage} contentFit="cover" />
-                    <LinearGradient
-                      colors={['transparent', 'rgba(0,0,0,0.8)']}
-                      style={styles.categoryOverlay}
-                    >
-                      <Text style={styles.categoryName}>{category.name}</Text>
-                    </LinearGradient>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
+                    {/* Categories */}
+                    <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>Browse Categories</Text>
+                    <View style={styles.categoriesGrid}>
+                        {CATEGORIES.map((category) => (
+                        <TouchableOpacity 
+                            key={category.id} 
+                            style={styles.categoryCard} 
+                            activeOpacity={0.8}
+                            onPress={() => handleTagPress(category.name)}
+                        >
+                            <Image source={{ uri: category.image }} style={styles.categoryImage} contentFit="cover" />
+                            <LinearGradient
+                            colors={['transparent', 'rgba(0,0,0,0.8)']}
+                            style={styles.categoryOverlay}
+                            >
+                            <Text style={styles.categoryName}>{category.name}</Text>
+                            </LinearGradient>
+                        </TouchableOpacity>
+                        ))}
+                    </View>
+                    </View>
+                </>
+            )}
 
           </ScrollView>
         </SafeAreaView>
@@ -277,5 +332,23 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     fontWeight: 'bold',
+  },
+  resultsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 15,
+    justifyContent: 'space-between',
+  },
+  resultCard: {
+    width: (width - 55) / 2,
+    height: 250,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#1a1a1a',
+    marginBottom: 15,
+  },
+  resultImage: {
+    width: '100%',
+    height: '100%',
   },
 });

@@ -12,6 +12,18 @@ const seedDatabase = async () => {
     await sequelize.sync({ force: true });
     console.log('Database cleared and synced.');
 
+    // 0. Create Default User
+    // 0. Create Default User
+    // User model requires fullName, not username. And password hook handles hashing.
+    const User = require('./models/User');
+    
+    await User.create({
+        fullName: 'Demo User',
+        email: 'demo@example.com',
+        password: '123456'
+    });
+    console.log('Default user created: demo@example.com / 123456');
+
     // 1. Create Categories
     const trendingCat = await Category.create({ title: 'Trending Now', type: 'mixed', displayOrder: 1 });
     const newReleasesCat = await Category.create({ title: 'New Releases', type: 'movie', displayOrder: 2 });
@@ -25,7 +37,7 @@ const seedDatabase = async () => {
       title: 'Inception',
       description: 'A thief who steals corporate secrets through the use of dream-sharing technology is given the inverse task of planting an idea into the mind of a C.E.O.',
       thumbnailUrl: 'https://image.tmdb.org/t/p/w500/9gk7admal4zlWH9AJ46r878Xpdf.jpg',
-      videoUrl: 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4', // Sample video
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4', // Sample video
       rating: 4.8,
       year: 2010,
       duration: '2h 28m',
@@ -40,7 +52,7 @@ const seedDatabase = async () => {
       title: 'The Dark Knight',
       description: 'When the menace known as the Joker wreaks havoc and chaos on the people of Gotham, Batman must accept one of the greatest psychological and physical tests of his ability to fight injustice.',
       thumbnailUrl: 'https://image.tmdb.org/t/p/w500/qJ2tW6WMUDux911r6m7haRef0WH.jpg',
-      videoUrl: 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
       rating: 4.9,
       year: 2008,
       duration: '2h 32m',
@@ -55,7 +67,7 @@ const seedDatabase = async () => {
       title: 'Interstellar',
       description: 'A team of explorers travel through a wormhole in space in an attempt to ensure humanity\'s survival.',
       thumbnailUrl: 'https://image.tmdb.org/t/p/w500/gEU2QniL6E77NI6lCU6MxlNBvIx.jpg',
-      videoUrl: 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
       rating: 4.7,
       year: 2014,
       duration: '2h 49m',
@@ -70,7 +82,7 @@ const seedDatabase = async () => {
         title: 'Avengers: Endgame',
         description: 'After the devastating events of Infinity War, the universe is in ruins. With the help of remaining allies, the Avengers assemble once more in order to reverse Thanos\' actions and restore balance to the universe.',
         thumbnailUrl: 'https://image.tmdb.org/t/p/w500/or06FN3Dka5tukK1e9sl16pB3iy.jpg',
-        videoUrl: 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+        videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
         rating: 4.9,
         year: 2019,
         duration: '3h 1m',
@@ -86,7 +98,7 @@ const seedDatabase = async () => {
       title: 'Funny Cat',
       description: 'Hilarious cat fails.',
       thumbnailUrl: 'https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=500&q=80',
-      videoUrl: 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
       rating: 4.5,
       duration: '15s',
       genre: 'Comedy',
@@ -99,7 +111,7 @@ const seedDatabase = async () => {
         title: 'Epic Stunts',
         description: 'Amazing parkour stunts.',
         thumbnailUrl: 'https://images.unsplash.com/photo-1519834785169-98be25ec3f84?w=500&q=80',
-        videoUrl: 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
+        videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
         rating: 4.8,
         duration: '30s',
         genre: 'Action',
@@ -109,16 +121,32 @@ const seedDatabase = async () => {
 
     // 4. Associate Content with Categories
     // Trending: Inception, Dark Knight, Short1
-    await trendingCat.addContents([movie1, movie2, short1]);
+    await trendingCat.addContents([movie1, movie2, short1, movie4, short2]);
     
     // New Releases: Interstellar, Endgame
-    await newReleasesCat.addContents([movie3, movie4]);
+    await newReleasesCat.addContents([movie3, movie4, movie1]);
 
     // Action: Dark Knight, Inception, Endgame
-    await actionCat.addContents([movie2, movie1, movie4]);
+    await actionCat.addContents([movie2, movie1, movie4, short2]);
+
+    // Comedy: Short1 (Funny Cat), Short2
+    await comedyCat.addContents([short1, short2, movie1]); // Inception is not comedy but adding for demo
 
     // Shorts: Short1, Short2
     await shortsCat.addContents([short1, short2]);
+
+    // Create other categories if they don't exist in the consts above but are used in frontend
+    // We already created 5. Let's reuse them or create new ones if needed.
+    // Frontend expects: Trending, New Releases, Action, Comedy, Sci-Fi, Documentaries, Horror
+    
+    const scifiCat = await Category.create({ title: 'Sci-Fi & Fantasy', type: 'movie', displayOrder: 6 });
+    await scifiCat.addContents([movie1, movie3, movie4]);
+
+    const docCat = await Category.create({ title: 'Documentaries', type: 'movie', displayOrder: 7 });
+    await docCat.addContents([short2]); // Just using what we have
+
+    const horrorCat = await Category.create({ title: 'Horror', type: 'movie', displayOrder: 8 });
+    await horrorCat.addContents([movie2]); // Dark Knight is kinda dark
 
     console.log('Data seeded successfully!');
     process.exit();

@@ -3,11 +3,12 @@ import { Audio } from 'expo-av';
 import { useFonts } from 'expo-font';
 import { Stack, useRootNavigationState, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import 'react-native-gesture-handler';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { ThemeProvider } from '../src/context/ThemeContext';
 import authService from '../src/services/authService';
+import VideoSplash from '../components/VideoSplash';
 
 // keep the native splash visible until we decide
 SplashScreen.preventAutoHideAsync().catch(() => { /* ignore */ });
@@ -17,6 +18,7 @@ export default function RootLayout() {
     ...FontAwesome.font,
   });
   const [isAuthenticated, setIsAuthenticated] = React.useState<boolean | null>(null);
+  const [isSplashFinished, setIsSplashFinished] = useState(false);
   const router = useRouter();
   const rootNavigationState = useRootNavigationState();
 
@@ -57,23 +59,32 @@ export default function RootLayout() {
   useEffect(() => {
     if (!loaded || !rootNavigationState?.key || isAuthenticated === null) return;
 
-    const inits = async () => {
-      if (isAuthenticated) {
-        // If authenticated, go to tabs
-        router.replace('/(tabs)');
-        SplashScreen.hideAsync();
-      } else {
-        // If not authenticated, redirect to login
-        router.replace('/auth/login');
-        SplashScreen.hideAsync();
-      }
-    };
-
-    inits();
-  }, [loaded, isAuthenticated, rootNavigationState]);
+    if (isSplashFinished) {
+      const inits = async () => {
+        if (isAuthenticated) {
+          // If authenticated, go to tabs
+          router.replace('/(tabs)');
+        } else {
+          // If not authenticated, redirect to login
+          router.replace('/auth/login');
+        }
+      };
+      inits();
+    }
+  }, [loaded, isAuthenticated, rootNavigationState, isSplashFinished]);
 
   if (!loaded) {
     return null;
+  }
+
+  if (!isSplashFinished) {
+    return (
+      <VideoSplash 
+        onFinish={() => {
+          setIsSplashFinished(true);
+        }} 
+      />
+    );
   }
 
   return (
@@ -83,7 +94,7 @@ export default function RootLayout() {
           headerShown: false,
           contentStyle: { backgroundColor: '#000' },
           animation: 'none',
-          presentation: 'transparentModal', // This helps with the transparency/overlay effect if needed, but 'card' is standard. 'none' is key.
+          presentation: 'transparentModal', 
         }}>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="auth/login" options={{ headerShown: false }} />
