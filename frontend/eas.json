@@ -7,6 +7,10 @@
     },
     "preview": {
       "distribution": "internal",
+      "npmClient": "npm",
+      "cache": {
+        "clear": true
+      },
       "android": {
         "buildType": "apk"
       }
