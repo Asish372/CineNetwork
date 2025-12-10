@@ -25,7 +25,13 @@ const Content = sequelize.define('Content', {
   },
   videoUrl: {
     type: DataTypes.STRING,
-    allowNull: false,
+    allowNull: true,
+  },
+  posterUrl: {
+    type: DataTypes.STRING, 
+  },
+  spriteUrl: {
+    type: DataTypes.STRING, 
   },
   rating: {
     type: DataTypes.FLOAT,
@@ -35,6 +41,14 @@ const Content = sequelize.define('Content', {
     type: DataTypes.INTEGER,
     allowNull: true,
   },
+  seasonCount: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0
+  },
+  episodeCount: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0
+  },
   duration: {
     type: DataTypes.STRING, // e.g., "2h 15m" or "15s"
     allowNull: true,
@@ -43,10 +57,63 @@ const Content = sequelize.define('Content', {
     type: DataTypes.STRING, // Comma separated or JSON
     allowNull: true,
   },
-  isVip: {
-    type: DataTypes.BOOLEAN,
-    defaultValue: false,
-  },
+    isVip: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+    status: {
+        type: DataTypes.ENUM('draft', 'published', 'archived'),
+        defaultValue: 'draft'
+    },
+    releaseDate: {
+        type: DataTypes.DATEONLY
+    },
+    languages: {
+        type: DataTypes.JSON, // ['English', 'Spanish']
+        defaultValue: []
+    },
+    cast: {
+        type: DataTypes.JSON, // [{ name: 'Actor', role: 'Hero' }]
+        defaultValue: []
+    },
+    crew: {
+        type: DataTypes.JSON, // [{ name: 'Director', role: 'Director' }]
+        defaultValue: []
+    },
+    studio: {
+        type: DataTypes.STRING
+    },
+    externalIds: {
+        type: DataTypes.JSON // { imdb: 'tt123456' }
+    },
+    ageRating: {
+        type: DataTypes.STRING // 'PG-13', 'R'
+    },
+    maturityFlags: {
+        type: DataTypes.JSON // ['violence', 'language']
+    },
+    seoTitle: {
+        type: DataTypes.STRING
+    },
+    seoDescription: {
+        type: DataTypes.TEXT
+    },
+    visibility: {
+        type: DataTypes.ENUM('public', 'private'),
+        defaultValue: 'public'
+    },
+    collections: {
+        type: DataTypes.JSON // ['featured', 'trending']
+    },
+    tags: {
+        type: DataTypes.JSON // ['action', '90s']
+    },
+    countries: {
+        type: DataTypes.JSON // ['US', 'IN']
+    },
+    primaryTitleMap: {
+        type: DataTypes.JSON // { en: "Title", es: "Titulo" }
+    },
   likes: {
     type: DataTypes.INTEGER,
     defaultValue: 0,
@@ -54,6 +121,18 @@ const Content = sequelize.define('Content', {
   views: {
     type: DataTypes.INTEGER,
     defaultValue: 0,
+  },
+  fakeViews: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+  },
+  fakeLikes: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+  },
+  showFakeStats: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false,
   },
 }, {
   timestamps: true,

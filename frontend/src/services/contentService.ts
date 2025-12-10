@@ -50,6 +50,30 @@ export const contentService = {
     const response = await api.get(`/content/category/${title}`);
     return response.data;
   },
+
+  getStreamUrl: async (contentId: string | number) => {
+    try {
+        const response = await api.get(`/video/url/${contentId}`);
+        return response.data.videoUrl;
+    } catch (error) {
+        console.error("Error fetching stream URL:", error);
+        return null;
+    }
+  },
+
+  getLayout: async (page: 'home' | 'shorts') => {
+    try {
+      const response = await api.get(`/layout/${page}`);
+      return response.data;
+    } catch (error) {
+      console.error(`Error fetching ${page} layout:`, error);
+      return null;
+    }
+  },
+  getPlans: async () => {
+    const response = await api.get('/plans');
+    return response.data;
+  },
 };
 
 export default contentService;

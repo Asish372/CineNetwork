@@ -14,157 +14,250 @@ import {
   StyleSheet,
   Text,
   Alert,
-  TouchableWithoutFeedback,
   View,
   Vibration,
+  Pressable
 } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView, TouchableOpacity } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import api from '../../src/services/api'; 
 import contentService from '../../src/services/contentService';
 import playbackService from '../../src/services/playbackService';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+// Backend Endpoints
+const API_BASE = api.defaults.baseURL; // http://192.168.0.103:5000/api
+const TOKEN_ENDPOINT = `${API_BASE}/secure/get-token`;
+// Proxy Base: Use backend proxy to validate token
+const PROXY_BASE = `${API_BASE}/secure/stream`; 
+
+// --- Utils: parse time & VTT ---
+function parseTimeToMs(t: string) {
+  const s = t.replace(",", ".").trim();
+  const parts = s.split(':').map(Number);
+  let ms = 0;
+  if (parts.length === 3) ms = (parts[0]*3600 + parts[1]*60 + parts[2]) * 1000;
+  else if (parts.length === 2) ms = (parts[0]*60 + parts[1]) * 1000;
+  if (s.includes('.')) {
+    const frac = s.split('.').pop();
+    ms = Math.round(ms + Number("0." + frac) * 1000);
+  }
+  return ms;
+}
+
+async function fetchVTT(url: string, token: string | null) {
+  if (!url) return [];
+  try {
+    const res = await fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+    const txt = await res.text();
+    const lines = txt.split(/\r?\n/);
+    const cues = [];
+    let i = 0;
+    while (i < lines.length) {
+      if (!lines[i].trim()) { i++; continue; }
+      // find time line
+      if (!lines[i].includes('-->')) { i++; continue; }
+      const [start, end] = lines[i].split('-->').map(s => s.trim());
+      i++;
+      let text = "";
+      while (i < lines.length && lines[i].trim()) {
+        text += (text ? "\n" : "") + lines[i];
+        i++;
+      }
+      cues.push({ start: parseTimeToMs(start), end: parseTimeToMs(end), text });
+    }
+    return cues;
+  } catch (e) {
+    console.warn("VTT fetch/parse failed", e);
+    return [];
+  }
+}
+
+// --- parse master playlist for variants (returns array of {label, uri}) ---
+async function parseMasterPlaylist(url: string, token: string | null) {
+  try {
+    const res = await fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+    const txt = await res.text();
+    const lines = txt.split(/\r?\n/);
+    const variants = [];
+    for (let i=0;i<lines.length;i++) {
+      const line = lines[i];
+      if (line && line.startsWith('#EXT-X-STREAM-INF:')) {
+        // find RESOLUTION or BANDWIDTH
+        const attrs = line.replace('#EXT-X-STREAM-INF:', '').split(',');
+        const resolution = attrs.find(a => a.includes('RESOLUTION'));
+        const bw = attrs.find(a => a.includes('BANDWIDTH'));
+        const label = resolution ? resolution.split('=')[1] : (bw ? `bw:${bw.split('=')[1]}` : `variant${variants.length+1}`);
+        // next non-empty line is URI
+        let j = i+1; while (j<lines.length && !lines[j].trim()) j++;
+        if (j<lines.length) {
+          // resolve relative URI
+          const uri = new URL(lines[j].trim(), url).toString();
+          variants.push({ label: label.replace(/"/g,''), uri });
+        }
+      }
+    }
+    return variants;
+  } catch (e) {
+    console.warn("Master playlist parse error", e);
+    return [];
+  }
+}
 
 export default function PlayerScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const videoRef = useRef<Video>(null);
   
-  // Params
-  const {
-    id,
-    title: initialTitle,
-    video: initialVideo,
-    position: initialPosition,
-  } = params;
-  
+  const { id } = params;
   const contentId = Array.isArray(id) ? id[0] : id;
 
-  // State
-  const [videoUrl, setVideoUrl] = useState(initialVideo as string);
-  const [videoTitle, setVideoTitle] = useState(initialTitle as string);
-  const [status, setStatus] = useState<AVPlaybackStatus | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [qualities, setQualities] = useState<any[]>([]); // manual options
+  const [currentUrl, setCurrentUrl] = useState<string>('');
+  const [masterUrl, setMasterUrl] = useState<string>(''); // Original Master URL
+  const [cues, setCues] = useState<any[]>([]);
+  const [subtitle, setSubtitle] = useState('');
+  const [status, setStatus] = useState<any>({});
+  const [loading, setLoading] = useState(true);
+  const [isRefreshingToken, setIsRefreshingToken] = useState(false);
   const [showControls, setShowControls] = useState(true);
-  const [isFullscreen, setIsFullscreen] = useState(false); // Start in false to ensure sync
-  const [orientation, setOrientation] = useState(ScreenOrientation.Orientation.PORTRAIT_UP);
   const [isDragging, setIsDragging] = useState(false);
   const [dragPosition, setDragPosition] = useState(0);
-  
+
   // Animation
   const controlsOpacity = useRef(new Animated.Value(1)).current;
   const controlsTimer = useRef<NodeJS.Timeout | null>(null);
 
-  // Load Content if URL missing
+  // 1. Fetch Token & Master URL
   useEffect(() => {
-    if (!videoUrl && contentId) {
-      loadContentDetails();
-    }
-  }, [contentId, videoUrl]);
+    let mounted = true;
+    (async () => {
+        try {
+            // Get Stream URL first
+            const streamUrl = await contentService.getStreamUrl(contentId as string);
+            if (!streamUrl) throw new Error("No stream URL");
+            
+            if (mounted) {
+                setMasterUrl(streamUrl);
 
-  const loadContentDetails = async () => {
-    try {
-      const content = await contentService.getContentById(contentId as string);
-      if (content) {
-        setVideoUrl(content.videoUrl);
-        setVideoTitle(content.title);
-      }
-    } catch (error) {
-      console.log('Failed to load content details:', error);
-    }
-  };
+                // CHECK: Is this HLS or Direct MP4?
+                const isHLS = streamUrl.includes('.m3u8');
+                
+                if (isHLS) {
+                    // Proxy logic: Construct Proxy URL for Master
+                    // The master playlist is fetched via Proxy so backend can validate token and fetch from storage
+                    // BUT wait, our backend proxy logic expects /secure/stream/VIDEO_ID/FILE_NAME
+                    // streamUrl is http://.../VIDEO_ID/master.m3u8
+                    // We need to transform this to PROXY_BASE/VIDEO_ID/master.m3u8
+                    
+                    // Extract video ID and filename
+                    const parts = streamUrl.split('/');
+                    const filename = parts.pop();
+                    const vidId = parts.pop();
+                    const proxyUrl = `${PROXY_BASE}/${vidId}/${filename}`;
+                    
+                    setCurrentUrl(proxyUrl);
+                } else {
+                    // Direct MP4 (Legacy/External)
+                    // Use URL directly, no token handling needed if public
+                    console.log("Playing Direct MP4:", streamUrl);
+                    setCurrentUrl(streamUrl);
+                    // For direct playback, we don't need the secure token for the video request itself 
+                    // if it's external (e.g., Google Storage).
+                    // If it's internal secure MP4, we might need it, but for now assuming external as per seed.
+                }
+            }
 
-  // Orientation & Lifecycle
+            // Fetch Token (Still fetch it for consistencies or future secure MP4)
+            const r = await fetch(TOKEN_ENDPOINT);
+            const j = await r.json();
+            if (mounted) setToken(j.token);
+
+        } catch (e) {
+            console.warn("Setup failed", e);
+            Alert.alert("Error", "Unable to load video.");
+        } finally { if (mounted) setLoading(false); }
+    })();
+    return () => { mounted = false; };
+  }, [contentId]);
+
+  // 2. Parse Manifest (Qualities)
   useEffect(() => {
-    // Force Landscape on mount
-    const lockLandscape = async () => {
-      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-      // Check immediately after locking
-      const current = await ScreenOrientation.getOrientationAsync();
-      const isLandscape = 
-        current === ScreenOrientation.Orientation.LANDSCAPE_LEFT || 
-        current === ScreenOrientation.Orientation.LANDSCAPE_RIGHT;
-      setIsFullscreen(isLandscape);
-    };
-    lockLandscape();
-
-    // Listen for orientation changes
-    const subscription = ScreenOrientation.addOrientationChangeListener((evt) => {
-      console.log('Orientation changed:', evt.orientationInfo.orientation);
-      const isLandscape = 
-        evt.orientationInfo.orientation === ScreenOrientation.Orientation.LANDSCAPE_LEFT || 
-        evt.orientationInfo.orientation === ScreenOrientation.Orientation.LANDSCAPE_RIGHT;
-      setIsFullscreen(isLandscape);
-      setOrientation(evt.orientationInfo.orientation);
-    });
-
-    // Reset controls timer
-    resetControlsTimer();
-
-    // Back Handler
-    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-      handleExit();
-      return true;
-    });
-
+    if (!token || !currentUrl) return;
+    (async () => {
+      try {
+        const q = await parseMasterPlaylist(currentUrl, token);
+        setQualities(q);
+        
+        // Setup orientation
+        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+      } catch (e) { console.warn(e); }
+    })();
+    
     return () => {
-      ScreenOrientation.removeOrientationChangeListener(subscription);
-      if (controlsTimer.current) clearTimeout(controlsTimer.current);
-      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-      backHandler.remove();
-    };
-  }, []);
+        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    }
+  }, [token, currentUrl]);
 
-  // Controls Visibility Logic
+  // 3. Subtitle Sync
+  useEffect(() => {
+    const pos = status.positionMillis ?? 0;
+    if (!cues || cues.length === 0) { setSubtitle(''); return; }
+    const c = cues.find((cc: any) => pos >= cc.start && pos <= cc.end);
+    setSubtitle(c ? c.text : '');
+  }, [status.positionMillis, cues]);
+
+  // 4. Token Refresh
+  useEffect(() => {
+    if (!token) return;
+    const iv = setInterval(async () => {
+      if (isRefreshingToken) return;
+      setIsRefreshingToken(true);
+      try {
+        const r = await fetch(TOKEN_ENDPOINT);
+        const j = await r.json();
+        setToken(j.token);
+      } catch (e) { console.warn("token refresh failed", e); }
+      setIsRefreshingToken(false);
+    }, 90_000); // 90s
+    return () => clearInterval(iv);
+  }, [token]);
+
+  // Controls Logic
   const resetControlsTimer = () => {
     if (controlsTimer.current) clearTimeout(controlsTimer.current);
     setShowControls(true);
-    Animated.timing(controlsOpacity, {
-      toValue: 1,
-      duration: 300,
-      useNativeDriver: true,
-    }).start();
-
+    Animated.timing(controlsOpacity, { toValue: 1, duration: 300, useNativeDriver: true }).start();
     controlsTimer.current = setTimeout(() => {
-      if (status?.isLoaded && status.isPlaying) {
-        hideControls();
+      if (status?.isPlaying) {
+        Animated.timing(controlsOpacity, { toValue: 0, duration: 300, useNativeDriver: true }).start(() => setShowControls(false));
       }
-    }, 4000) as unknown as NodeJS.Timeout;
+    }, 4000);
   };
 
-  const hideControls = () => {
-    Animated.timing(controlsOpacity, {
-      toValue: 0,
-      duration: 300,
-      useNativeDriver: true,
-    }).start(() => setShowControls(false));
+  // Double-tap skip
+  const lastTap = useRef(0);
+  const handleTap = async (side: "left" | "right") => {
+    const now = Date.now();
+    if (now - lastTap.current < 300) {
+      if (videoRef.current && status.positionMillis != null) {
+        const skipAmount = side === "right" ? 10000 : -10000;
+        const newPos = Math.max(0, status.positionMillis + skipAmount);
+        await videoRef.current.setPositionAsync(newPos);
+        resetControlsTimer();
+      }
+    }
+    lastTap.current = now;
+    // Single tap toggles controls
+    toggleControls(); 
   };
 
   const toggleControls = () => {
     if (showControls) {
-      hideControls();
+       Animated.timing(controlsOpacity, { toValue: 0, duration: 300, useNativeDriver: true }).start(() => setShowControls(false));
     } else {
-      resetControlsTimer();
+       resetControlsTimer();
     }
-  };
-
-  // Playback Logic
-  const togglePlay = async () => {
-    if (!videoRef.current) return;
-    if (status?.isLoaded) {
-      if (status.isPlaying) {
-        await videoRef.current.pauseAsync();
-        resetControlsTimer(); // Keep controls visible when paused
-      } else {
-        await videoRef.current.playAsync();
-        resetControlsTimer();
-      }
-    }
-  };
-
-  const handleSeek = async (value: number) => {
-    if (!videoRef.current || !status?.isLoaded) return;
-    resetControlsTimer();
-    await videoRef.current.setPositionAsync(value);
   };
 
   const skip = async (amount: number) => {
@@ -174,37 +267,27 @@ export default function PlayerScreen() {
     await videoRef.current.setPositionAsync(newPos);
   };
 
-  // Orientation Toggle
-  const toggleOrientation = async () => {
-    // Haptic Feedback
-    Vibration.vibrate(50);
-
+  const switchQuality = async (uri: string) => {
     try {
-      if (isFullscreen) {
-        // Switch to Portrait
-        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-      } else {
-        // Switch to Landscape (Left)
-        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE_LEFT);
+      setLoading(true);
+      if (videoRef.current) {
+          await videoRef.current.pauseAsync();
+           // Construct proxy URL for variant if needed, 
+           // but normally the master playlist uses relative paths which parseMasterPlaylist converts to absolute.
+           // Since parseMasterPlaylist uses the 'url' arg as base, and consistent with proxyUrl, 
+           // the 'uri' here should already be pointing to the proxy if parseMasterPlaylist resolves correctly against the proxy base.
+          await videoRef.current.loadAsync({ 
+              uri: uri,
+              headers: token ? { Authorization: `Bearer ${token}` } : {}
+          }, { shouldPlay: true });
       }
-    } catch (error) {
-      console.log("Orientation toggle error:", error);
-    }
+      setCurrentUrl(uri);
+    } catch (e) {
+      console.warn("switchQuality failed", e);
+      Alert.alert("Quality switch failed");
+    } finally { setLoading(false); }
   };
 
-  const handleExit = async () => {
-    // Save progress
-    if (videoRef.current && status?.isLoaded) {
-        try {
-            await playbackService.savePosition(contentId as string, status.positionMillis);
-        } catch (e) {
-            console.error("Failed to save progress", e);
-        }
-    }
-    router.back();
-  };
-
-  // Format Time
   const formatTime = (millis: number) => {
     if (!millis) return "00:00";
     const totalSeconds = Math.floor(millis / 1000);
@@ -213,276 +296,174 @@ export default function PlayerScreen() {
     return `${minutes < 10 ? '0' : ''}${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
   };
 
-  // Gestures
-  const doubleTapLeft = Gesture.Tap()
-    .numberOfTaps(2)
-    .onEnd(() => {
-        skip(-10000);
-    })
-    .runOnJS(true);
-
-  const doubleTapRight = Gesture.Tap()
-    .numberOfTaps(2)
-    .onEnd(() => {
-        skip(10000);
-    })
-    .runOnJS(true);
-
-  const singleTap = Gesture.Tap()
-    .onEnd(() => {
-        toggleControls();
-    })
-    .runOnJS(true);
+  if (!currentUrl || !token) {
+      return (
+          <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#E50914" />
+          </View>
+      );
+  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000' }}>
       <StatusBar hidden={true} />
       
       <View style={styles.container}>
-        <Video
-          ref={videoRef}
-          source={{ uri: videoUrl || "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4" }}
-          style={styles.video}
-          resizeMode={ResizeMode.CONTAIN}
-          shouldPlay
-          onPlaybackStatusUpdate={setStatus}
-          onLoad={async () => {
-             if (initialPosition) {
-                 await videoRef.current?.playFromPositionAsync(parseInt(initialPosition as string, 10));
-             }
-          }}
-        />
+        <View style={styles.videoContainer}>
+            <Video
+            ref={videoRef}
+            source={{
+                uri: currentUrl,
+                headers: token ? { Authorization: `Bearer ${token}` } : {}
+            }}
+            style={styles.video}
+            resizeMode={ResizeMode.CONTAIN}
+            useNativeControls={false}
+            shouldPlay
+            onPlaybackStatusUpdate={(s) => {
+                setStatus(s);
+                if (s.isLoaded && s.isPlaying && showControls) {
+                    // logic moved to timer
+                }
+            }}
+            onError={(e) => console.warn("player error", e)}
+            />
+            {/* Double Tap & Controls Check Overlay */}
+             <View style={StyleSheet.absoluteFill}>
+                <View style={{ flex: 1, flexDirection: "row" }}>
+                    <Pressable style={{ flex: 1 }} onPress={() => handleTap("left")} />
+                    <Pressable style={{ flex: 1 }} onPress={() => handleTap("right")} />
+                </View>
+            </View>
 
-        {/* Gesture Layer */}
-        <View style={StyleSheet.absoluteFill}>
-            <GestureDetector gesture={Gesture.Exclusive(doubleTapLeft, doubleTapRight, singleTap)}>
-                <View style={styles.gestureArea} />
-            </GestureDetector>
+             {subtitle ? (
+                <View style={styles.subtitleBox}>
+                    <Text style={styles.subtitleText}>{subtitle}</Text>
+                </View>
+            ) : null}
         </View>
 
         {/* Controls Overlay */}
         <Animated.View 
             style={[
                 StyleSheet.absoluteFill, 
-                { opacity: controlsOpacity, zIndex: 100, elevation: 100 },
+                { opacity: controlsOpacity, zIndex: 100 },
                 !showControls && { pointerEvents: 'none' }
             ]}
-            pointerEvents={showControls ? "box-none" : "none"}
         >
             <LinearGradient
                 colors={['rgba(0,0,0,0.6)', 'transparent', 'rgba(0,0,0,0.8)']}
                 style={styles.controlsContainer}
             >
                 <SafeAreaView style={styles.controlsContent}>
-                {/* Top Bar */}
-                <View style={styles.topBar}>
-                    <TouchableOpacity onPress={handleExit} style={styles.iconButton} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
-                        <Ionicons name="arrow-back" size={28} color="#fff" />
-                    </TouchableOpacity>
-                    <Text style={styles.videoTitle} numberOfLines={1}>{videoTitle}</Text>
-                    <View style={{ width: 40 }} /> 
-                </View>
-
-                {/* Center Controls */}
-                <View style={styles.centerControls}>
-                    <TouchableOpacity onPress={() => skip(-10000)} style={styles.skipButton}>
-                        <MaterialIcons name="replay-10" size={40} color="#fff" />
-                    </TouchableOpacity>
-                    
-                    <TouchableOpacity onPress={togglePlay} style={styles.playButton}>
-                        <Ionicons 
-                            name={status?.isLoaded && status.isPlaying ? "pause" : "play"} 
-                            size={50} 
-                            color="#000" 
-                            style={{ marginLeft: status?.isLoaded && status.isPlaying ? 0 : 4 }}
-                        />
-                    </TouchableOpacity>
-
-                    <TouchableOpacity onPress={() => skip(10000)} style={styles.skipButton}>
-                        <MaterialIcons name="forward-10" size={40} color="#fff" />
-                    </TouchableOpacity>
-                </View>
-
-                {/* Bottom Bar */}
-                <View style={styles.bottomBar}>
-                    <View style={styles.sliderRow}>
-                        <Text style={styles.timeText}>
-                            {formatTime(isDragging ? dragPosition : (status?.isLoaded ? status.positionMillis : 0))}
-                        </Text>
-                        <Slider
-                            style={styles.slider}
-                            minimumValue={0}
-                            maximumValue={status?.isLoaded ? status.durationMillis || 0 : 0}
-                            value={isDragging ? dragPosition : (status?.isLoaded ? status.positionMillis : 0)}
-                            onSlidingStart={() => {
-                                setIsDragging(true);
-                                if (controlsTimer.current) clearTimeout(controlsTimer.current);
-                            }}
-                            onValueChange={(value) => {
-                                setDragPosition(value);
-                            }}
-                            onSlidingComplete={async (value) => {
-                                await handleSeek(value);
-                                setIsDragging(false);
-                            }}
-                            minimumTrackTintColor="#E50914"
-                            maximumTrackTintColor="rgba(255,255,255,0.3)"
-                            thumbTintColor="#E50914"
-                        />
-                        <Text style={styles.timeText}>
-                            {status?.isLoaded ? formatTime(status.durationMillis || 0) : "00:00"}
-                        </Text>
-                    </View>
-                    
-                    <View style={styles.bottomActions}>
-                         <TouchableOpacity style={styles.actionButton}>
-                            <MaterialIcons name="subtitles" size={20} color="#fff" />
-                            <Text style={styles.actionText}>Audio & Subs</Text>
+                    {/* Top Bar */}
+                    <View style={styles.topBar}>
+                        <TouchableOpacity onPress={() => router.back()} style={styles.iconButton}>
+                            <Ionicons name="arrow-back" size={28} color="#fff" />
                         </TouchableOpacity>
+                        <Text style={styles.videoTitle}>Secure Playback</Text>
+                    </View>
 
-                        <TouchableOpacity style={styles.actionButton}>
-                            <MaterialIcons name="hd" size={20} color="#fff" />
-                            <Text style={styles.actionText}>Quality</Text>
+                    {/* Center Controls */}
+                    <View style={styles.centerControls}>
+                         <TouchableOpacity onPress={() => skip(-10000)} style={styles.skipButton}>
+                            <MaterialIcons name="replay-10" size={40} color="#fff" />
                         </TouchableOpacity>
                         
-                        <TouchableOpacity 
-                            onPress={toggleOrientation} 
-                            style={styles.iconButton}
-                            hitSlop={{top: 20, bottom: 20, left: 20, right: 20}}
-                        >
-                            <MaterialIcons 
-                                name={isFullscreen ? "fullscreen-exit" : "fullscreen"} 
-                                size={28} 
-                                color="#fff" 
+                        <TouchableOpacity onPress={() => {
+                            if (status.isPlaying) videoRef.current?.pauseAsync();
+                            else videoRef.current?.playAsync();
+                            resetControlsTimer();
+                        }} style={styles.playButton}>
+                            <Ionicons 
+                                name={status?.isPlaying ? "pause" : "play"} 
+                                size={50} 
+                                color="#000" 
                             />
                         </TouchableOpacity>
-                    </View>
-                </View>
 
-            </SafeAreaView>
+                        <TouchableOpacity onPress={() => skip(10000)} style={styles.skipButton}>
+                            <MaterialIcons name="forward-10" size={40} color="#fff" />
+                        </TouchableOpacity>
+                    </View>
+
+                    {/* Bottom Bar */}
+                    <View style={styles.bottomBar}>
+                         <View style={styles.sliderRow}>
+                            <Text style={styles.timeText}>
+                                {formatTime(isDragging ? dragPosition : (status?.positionMillis || 0))}
+                            </Text>
+                            <Slider
+                                style={styles.slider}
+                                minimumValue={0}
+                                maximumValue={status?.durationMillis || 0}
+                                value={isDragging ? dragPosition : (status?.positionMillis || 0)}
+                                onSlidingStart={() => {
+                                    setIsDragging(true);
+                                    if (controlsTimer.current) clearTimeout(controlsTimer.current);
+                                }}
+                                onValueChange={setDragPosition}
+                                onSlidingComplete={async (value) => {
+                                    await videoRef.current?.setPositionAsync(value);
+                                    setIsDragging(false);
+                                    resetControlsTimer();
+                                }}
+                                minimumTrackTintColor="#E50914"
+                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                thumbTintColor="#E50914"
+                            />
+                            <Text style={styles.timeText}>
+                                {formatTime(status?.durationMillis || 0)}
+                            </Text>
+                        </View>
+
+                        <View style={styles.qualitiesRow}>
+                            {qualities.length > 0 ? (
+                                qualities.map((q, i) => (
+                                    <TouchableOpacity key={i} style={styles.qualityBtn} onPress={() => switchQuality(q.uri)}>
+                                        <Text style={styles.qualityText}>{q.label}</Text>
+                                    </TouchableOpacity>
+                                ))
+                            ) : (
+                                <Text style={styles.qualityText}>Auto</Text>
+                            )}
+                        </View>
+                    </View>
+                </SafeAreaView>
             </LinearGradient>
         </Animated.View>
-
-        {/* Loading Indicator */}
-        {(!status?.isLoaded || status.isBuffering) && (
-            <View style={styles.loadingOverlay}>
-                <ActivityIndicator size="large" color="#E50914" />
-            </View>
+        
+        {loading && (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator size="large" color="#E50914" />
+          </View>
         )}
-
       </View>
     </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  video: {
-    width: '100%',
-    height: '100%',
-  },
-  gestureArea: {
-    width: '100%',
-    height: '100%',
-    backgroundColor: 'transparent',
-  },
-  controlsContainer: {
-    flex: 1,
-  },
-  controlsContent: {
-    flex: 1,
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  videoTitle: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-    flex: 1,
-    textAlign: 'center',
-    marginHorizontal: 20,
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
-  },
-  iconButton: {
-    padding: 8,
-  },
-  centerControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 40,
-  },
-  playButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#fff',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
-  },
-  skipButton: {
-    padding: 10,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 30,
-  },
-  bottomBar: {
-    gap: 10,
-  },
-  sliderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  slider: {
-    flex: 1,
-    height: 40,
-  },
-  timeText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
-    width: 45,
-    textAlign: 'center',
-  },
-  bottomActions: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      paddingHorizontal: 10,
-  },
-  actionButton: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 5,
-  },
-  actionText: {
-      color: '#fff',
-      fontSize: 12,
-      fontWeight: '600',
-  },
-  loadingOverlay: {
-      ...StyleSheet.absoluteFillObject,
-      justifyContent: 'center',
-      alignItems: 'center',
-      zIndex: 5,
-      pointerEvents: 'none',
-  },
+  container: { flex: 1, backgroundColor: '#000',  justifyContent: 'center' },
+  loadingContainer: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
+  videoContainer: { width: '100%', height: '100%' },
+  video: { width: '100%', height: '100%' },
+  controlsContainer: { flex: 1 },
+  controlsContent: { flex: 1, justifyContent: 'space-between', padding: 20 },
+  topBar: { flexDirection: 'row', alignItems: 'center' },
+  iconButton: { padding: 8 },
+  videoTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold', marginLeft: 15 },
+  centerControls: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 40 },
+  playButton: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' },
+  skipButton: { padding: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 30 },
+  bottomBar: { gap: 15 },
+  sliderRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  slider: { flex: 1, height: 40 },
+  timeText: { color: '#fff', fontSize: 12, width: 45, textAlign: 'center' },
+  qualitiesRow: { flexDirection: 'row', gap: 10, flexWrap: 'wrap' },
+  qualityBtn: { paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: '#666', borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.4)' },
+  qualityText: { color: '#fff', fontSize: 12 },
+  subtitleBox: { position: "absolute", bottom: 20, left: 20, right: 20, alignItems: "center", backgroundColor: "rgba(0,0,0,0.6)", padding: 8, borderRadius: 6 },
+  subtitleText: { color: "white", textAlign: "center", fontSize: 16 },
+  loadingOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', zIndex: 50 }
 });

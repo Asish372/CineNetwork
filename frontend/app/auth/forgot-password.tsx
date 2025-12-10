@@ -1,93 +1,29 @@
-import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
+import React, { useState } from 'react';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
-import {
-    ActivityIndicator,
-    Alert,
-    Animated,
-    Dimensions,
-    Easing,
-    Keyboard,
-    KeyboardAvoidingView,
-    Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
-} from 'react-native';
-import { authService } from '../../src/services/authService';
-
-const { width, height } = Dimensions.get('window');
+import { LinearGradient } from 'expo-linear-gradient';
+import { StatusBar } from 'expo-status-bar';
+import { Ionicons } from '@expo/vector-icons';
+import authService from '../../src/services/authService';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
+  const [step, setStep] = useState(1); // 1: Email, 2: OTP, 3: New Password
   const [email, setEmail] = useState('');
+  const [otp, setOtp] = useState('');
+  const [newPassword, setNewPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Animations
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(30)).current;
-  const orb1Pos = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
-  const orb2Pos = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
-
-  useEffect(() => {
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 800,
-        useNativeDriver: true,
-      }),
-      Animated.spring(slideAnim, {
-        toValue: 0,
-        friction: 8,
-        useNativeDriver: true,
-      }),
-    ]).start();
-
-    const createFloatingAnimation = (animValue: Animated.ValueXY, duration: number, xRange: number, yRange: number) => {
-      return Animated.loop(
-        Animated.sequence([
-          Animated.timing(animValue, {
-            toValue: { x: xRange, y: yRange },
-            duration: duration,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: true,
-          }),
-          Animated.timing(animValue, {
-            toValue: { x: -xRange, y: -yRange },
-            duration: duration * 1.2,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: true,
-          }),
-          Animated.timing(animValue, {
-            toValue: { x: 0, y: 0 },
-            duration: duration,
-            easing: Easing.inOut(Easing.ease),
-            useNativeDriver: true,
-          }),
-        ])
-      );
-    };
-
-    Animated.parallel([
-      createFloatingAnimation(orb1Pos, 6000, 50, 30),
-      createFloatingAnimation(orb2Pos, 7000, -40, 60),
-    ]).start();
-  }, []);
-
   const handleSendOtp = async () => {
-    Keyboard.dismiss();
     if (!email) {
       Alert.alert('Error', 'Please enter your email address');
       return;
     }
-
     setLoading(true);
     try {
       await authService.sendForgotPasswordOtp(email);
-      router.push({ pathname: '/auth/otp', params: { email, mode: 'forgot-password' } });
+      setStep(2);
+      Alert.alert('Success', 'OTP sent to your email');
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.message || 'Failed to send OTP');
     } finally {
@@ -95,165 +31,240 @@ export default function ForgotPasswordScreen() {
     }
   };
 
-  return (
-    <View style={styles.container}>
-      <LinearGradient
-        colors={['#050505', '#101010', '#050505']}
-        style={StyleSheet.absoluteFill}
-      />
+  const handleVerifyOtp = async () => {
+    if (!otp) {
+      Alert.alert('Error', 'Please enter the OTP');
+      return;
+    }
+    setLoading(true);
+    try {
+      await authService.verifyForgotPasswordOtp(email, otp);
+      setStep(3);
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.message || 'Invalid OTP');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      {/* Background Orbs */}
-      <Animated.View style={[styles.orb, styles.orb1, {
-        transform: [{ translateX: orb1Pos.x }, { translateY: orb1Pos.y }]
-      }]}>
-        <LinearGradient
-          colors={['#E50914', 'transparent']}
-          start={{ x: 0.3, y: 0.3 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.orbGradient}
+  const handleResetPassword = async () => {
+    if (!newPassword) {
+      Alert.alert('Error', 'Please enter a new password');
+      return;
+    }
+    setLoading(true);
+    try {
+      await authService.resetPassword({ email, otp, newPassword });
+      Alert.alert('Success', 'Password reset successfully', [
+        { text: 'Login', onPress: () => router.replace('/auth/login') }
+      ]);
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.message || 'Failed to reset password');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderStep1 = () => (
+    <View style={styles.formContainer}>
+      <Text style={styles.title}>Forgot Password</Text>
+      <Text style={styles.subtitle}>Enter your email to receive a reset OTP</Text>
+      
+      <View style={styles.inputContainer}>
+        <Ionicons name="mail-outline" size={20} color="#666" style={styles.inputIcon} />
+        <TextInput
+          style={styles.input}
+          placeholder="Email Address"
+          placeholderTextColor="#666"
+          value={email}
+          onChangeText={setEmail}
+          autoCapitalize="none"
+          keyboardType="email-address"
         />
-      </Animated.View>
+      </View>
 
-      <Animated.View style={[styles.orb, styles.orb2, {
-        transform: [{ translateX: orb2Pos.x }, { translateY: orb2Pos.y }]
-      }]}>
-        <LinearGradient
-          colors={['#0044ff', 'transparent']}
-          start={{ x: 0.7, y: 0.7 }}
-          end={{ x: 0, y: 0 }}
-          style={styles.orbGradient}
-        />
-      </Animated.View>
-
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1, zIndex: 10, justifyContent: 'center' }}
+      <TouchableOpacity
+        style={styles.button}
+        onPress={handleSendOtp}
+        disabled={loading}
       >
-        <View style={styles.content}>
+        {loading ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.buttonText}>Send OTP</Text>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderStep2 = () => (
+    <View style={styles.formContainer}>
+      <Text style={styles.title}>Verify OTP</Text>
+      <Text style={styles.subtitle}>Enter the code sent to {email}</Text>
+      
+      <View style={styles.inputContainer}>
+        <Ionicons name="key-outline" size={20} color="#666" style={styles.inputIcon} />
+        <TextInput
+          style={styles.input}
+          placeholder="Enter OTP"
+          placeholderTextColor="#666"
+          value={otp}
+          onChangeText={setOtp}
+          keyboardType="number-pad"
+          maxLength={6}
+        />
+      </View>
+
+      <TouchableOpacity
+        style={styles.button}
+        onPress={handleVerifyOtp}
+        disabled={loading}
+      >
+        {loading ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.buttonText}>Verify OTP</Text>
+        )}
+      </TouchableOpacity>
+
+      <TouchableOpacity onPress={() => setStep(1)} style={styles.linkButton}>
+        <Text style={styles.linkText}>Change Email</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderStep3 = () => (
+    <View style={styles.formContainer}>
+      <Text style={styles.title}>Reset Password</Text>
+      <Text style={styles.subtitle}>Create a new secure password</Text>
+      
+      <View style={styles.inputContainer}>
+         <Ionicons name="lock-closed-outline" size={20} color="#666" style={styles.inputIcon} />
+        <TextInput
+          style={styles.input}
+          placeholder="New Password"
+          placeholderTextColor="#666"
+          value={newPassword}
+          onChangeText={setNewPassword}
+          secureTextEntry
+        />
+      </View>
+
+      <TouchableOpacity
+        style={styles.button}
+        onPress={handleResetPassword}
+        disabled={loading}
+      >
+        {loading ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.buttonText}>Reset Password</Text>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+
+  return (
+    <LinearGradient colors={['#000000', '#1a1a1a']} style={styles.container}>
+      <StatusBar style="light" />
+      <KeyboardAvoidingView 
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+      >
+        <ScrollView contentContainerStyle={styles.scrollContent}>
           <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <Ionicons name="arrow-back" size={24} color="#fff" />
+            <Ionicons name="arrow-back" size={24} color="#E50914" />
           </TouchableOpacity>
 
-          <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
-            <Text style={styles.title}>Forgot Password</Text>
-            <Text style={styles.subtitle}>
-              Enter your email address and we'll send you a code to reset your password.
-            </Text>
+          <View style={styles.logoContainer}>
+             {/* Placeholder for Logo if needed */}
+             <Ionicons name="lock-closed" size={60} color="#E50914" />
+          </View>
 
-            <View style={styles.inputWrapper}>
-              <Ionicons name="mail-outline" size={20} color="#888" style={styles.inputIcon} />
-              <TextInput
-                style={styles.input}
-                placeholder="Email Address"
-                placeholderTextColor="#666"
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
-            </View>
+          {step === 1 && renderStep1()}
+          {step === 2 && renderStep2()}
+          {step === 3 && renderStep3()}
 
-            <TouchableOpacity onPress={handleSendOtp} activeOpacity={0.8}>
-              <LinearGradient
-                colors={['#E50914', '#B20710']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.button}
-              >
-                <Text style={styles.buttonText}>
-                  {loading ? <ActivityIndicator color="#fff" /> : 'Send Code'}
-                </Text>
-              </LinearGradient>
-            </TouchableOpacity>
-          </Animated.View>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
-    </View>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000',
   },
-  orb: {
-    position: 'absolute',
-    borderRadius: 200,
-    opacity: 0.4,
-  },
-  orbGradient: {
-    flex: 1,
-    borderRadius: 200,
-  },
-  orb1: {
-    top: -100,
-    left: -50,
-    width: 400,
-    height: 400,
-  },
-  orb2: {
-    bottom: -50,
-    right: -100,
-    width: 350,
-    height: 350,
-    opacity: 0.3,
-  },
-  content: {
-    padding: 24,
-    width: '100%',
+  scrollContent: {
+    flexGrow: 1,
+    padding: 20,
+    justifyContent: 'center',
   },
   backButton: {
     position: 'absolute',
-    top: -60,
-    left: 24,
-    zIndex: 20,
+    top: 50,
+    left: 20,
+    zIndex: 10,
     padding: 10,
+  },
+  logoContainer: {
+    alignItems: 'center',
+    marginBottom: 40,
+  },
+  formContainer: {
+    width: '100%',
   },
   title: {
     fontSize: 32,
-    fontWeight: '800',
+    fontWeight: 'bold',
     color: '#fff',
     marginBottom: 10,
+    textAlign: 'center',
   },
   subtitle: {
     fontSize: 16,
-    color: '#aaa',
-    marginBottom: 40,
-    lineHeight: 24,
+    color: '#999',
+    marginBottom: 30,
+    textAlign: 'center',
   },
-  inputWrapper: {
+  inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 12,
-    marginBottom: 24,
+    backgroundColor: '#333',
+    borderRadius: 8,
+    marginBottom: 20,
+    paddingHorizontal: 15,
+    height: 50,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: '#444',
   },
   inputIcon: {
-    paddingHorizontal: 16,
+    marginRight: 10,
   },
   input: {
     flex: 1,
-    paddingVertical: 16,
-    paddingRight: 16,
     color: '#fff',
     fontSize: 16,
   },
   button: {
-    borderRadius: 12,
-    paddingVertical: 16,
+    backgroundColor: '#E50914',
+    height: 50,
+    borderRadius: 8,
+    justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#E50914',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
+    marginTop: 10,
   },
   buttonText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: 'bold',
+  },
+  linkButton: {
+    marginTop: 20,
+    alignItems: 'center',
+  },
+  linkText: {
+    color: '#999',
+    fontSize: 14,
   },
 });

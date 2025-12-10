@@ -5,6 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import contentService from '../../src/services/contentService';
 import playbackService from '../../src/services/playbackService';
+import authService from '../../src/services/authService';
 import React, { useRef, useState, useCallback } from 'react';
 import {
     Dimensions,
@@ -28,13 +29,27 @@ export default function DetailsScreen() {
   const [isMuted, setIsMuted] = useState(true);
   const [isPlaying, setIsPlaying] = useState(true);
   const [showPlayer, setShowPlayer] = useState(false);
+  const [heroVideoUrl, setHeroVideoUrl] = useState<string | null>(params.video as string);
   const playbackPositionRef = useRef(0);
   const [shouldPlayInline, setShouldPlayInline] = useState(false);
   const [isInWatchlist, setIsInWatchlist] = useState(false);
 
   React.useEffect(() => {
     checkWatchlist();
+    loadStreamUrl();
   }, [params.id]);
+
+  const loadStreamUrl = async () => {
+    try {
+        const streamUrl = await contentService.getStreamUrl(params.id as string);
+        if (streamUrl) {
+            console.log('Using HLS Stream for Hero:', streamUrl);
+            setHeroVideoUrl(streamUrl);
+        }
+    } catch (e) {
+        console.error("Failed to load hero stream", e);
+    }
+  };
 
   const checkWatchlist = async () => {
     try {
@@ -96,15 +111,82 @@ export default function DetailsScreen() {
     video = '',
     image = '',
     likes = '0',
+    views = '0', // Add views
     comments = '0',
   } = params;
 
-  // Mock Episodes Data
-  const EPISODES = [
-    { id: 1, title: 'The Beginning', duration: '45m', image: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=400&q=80', desc: 'The journey begins in a world of chaos.' },
-    { id: 2, title: 'Lost Souls', duration: '42m', image: 'https://images.unsplash.com/photo-1682687220742-aba13b6e50ba?w=400&q=80', desc: 'Finding the lost path is harder than it seems.' },
-    { id: 3, title: 'Redemption', duration: '48m', image: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?w=400&q=80', desc: 'A chance to make things right.' },
-  ];
+  // VIP Logic
+  const isVip = params.isVip === 'true';
+  const [canWatch, setCanWatch] = useState(!isVip);
+
+  React.useEffect(() => {
+    const checkAccess = async () => {
+        if (!isVip) return;
+        
+        try {
+            const user = await authService.getCurrentUser();
+            if (user && user.subscription && user.subscription.status === 'active' && new Date(user.subscription.endDate) > new Date()) {
+                setCanWatch(true);
+            } else {
+                // Double check with API if local data is stale
+                const freshUser = await authService.getMe();
+                if (freshUser && freshUser.UserSubscription && freshUser.UserSubscription.status === 'active') {
+                    setCanWatch(true);
+                } else {
+                    setCanWatch(false);
+                }
+            }
+        } catch (e) {
+            console.log('Access check failed', e);
+            setCanWatch(false);
+        }
+    };
+    checkAccess();
+  }, [isVip]);
+
+
+  const [realEpisodes, setRealEpisodes] = useState<any[]>([]);
+
+  React.useEffect(() => {
+    loadEpisodes();
+  }, [params.id, selectedSeason]);
+
+  const loadEpisodes = async () => {
+    try {
+        const data = await contentService.getContentById(params.id as string);
+        
+        // Find selected season
+        const season = data.Seasons?.find((s: any) => s.title === selectedSeason || s.seasonNumber.toString() === selectedSeason.replace('Season ', ''));
+        
+        if (season && season.Episodes) {
+            setRealEpisodes(season.Episodes);
+        } else if (data.Seasons && data.Seasons.length > 0) {
+            // Default to first season if mismatch
+             setRealEpisodes(data.Seasons[0].Episodes || []);
+        } else {
+            setRealEpisodes([]);
+        }
+
+    } catch (e) {
+        console.log('Failed to load episodes', e);
+    }
+  };
+
+  const handleEpisodePlay = (ep: any) => {
+    if (ep.isFree || canWatch) {
+        // Play
+        router.push({
+            pathname: '/player/[id]',
+            params: { 
+                id: `ep-${ep.id}`, // Custom prefix to signal Episode ID
+                ...params
+            }
+       });
+    } else {
+        router.push('/subscription');
+    }
+  };
+
 
   return (
     <View style={styles.container}>
@@ -118,7 +200,7 @@ export default function DetailsScreen() {
              <View style={{ width: width, height: 250 }}>
                 <Video
                   ref={playerVideoRef}
-                  source={{ uri: video as string || "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4" }}
+                  source={{ uri: heroVideoUrl || "https://d23dyxeqlo5psv.cloudfront.net/big_buck_bunny.mp4" }}
                   style={{ width: '100%', height: '100%' }}
                   resizeMode={ResizeMode.CONTAIN}
                   shouldPlay={shouldPlayInline}
@@ -165,7 +247,7 @@ export default function DetailsScreen() {
               {video ? (
                 <Video
                   ref={videoRef}
-                  source={{ uri: video as string }}
+                  source={{ uri: heroVideoUrl || video as string }}
                   style={styles.heroVideo}
                   resizeMode={ResizeMode.COVER}
                   shouldPlay={isPlaying}
@@ -231,12 +313,45 @@ export default function DetailsScreen() {
             </View>
           </View>
 
+          {/* Engagement Stats Row */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 20, marginBottom: 20 }}>
+             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="eye-outline" size={18} color="#ffff" />
+                <Text style={{ color: '#ccc', fontSize: 13 }}>
+                    {/* Format Numbers: 1200 -> 1.2k */}
+                   {Intl.NumberFormat('en-US', { notation: "compact", maximumFractionDigits: 1 }).format(Number(params.views || 0))}
+                </Text>
+             </View>
+             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="heart-outline" size={18} color="#E50914" />
+                <Text style={{ color: '#ccc', fontSize: 13 }}>
+                   {Intl.NumberFormat('en-US', { notation: "compact", maximumFractionDigits: 1 }).format(Number(params.likes || 0))}
+                </Text>
+             </View>
+          </View>
+
           {/* Action Buttons */}
-          {!showPlayer && (
+          {/* VIP Restriction Check */}
+          {(!isVip || canWatch) ? (
+              !showPlayer && (
             <TouchableOpacity 
                 style={styles.playButton} 
                 activeOpacity={0.8}
-                onPress={() => setShowPlayer(true)}
+                onPress={() => {
+                    if (isVip && !canWatch) {
+                        router.push('/subscription');
+                        return;
+                    }
+                    
+                    const currentPos = 0; // Or get from service if needed
+                    router.push({
+                         pathname: '/player/[id]',
+                         params: { 
+                             id: params.id as string, 
+                             ...params
+                         }
+                    });
+                }}
             >
                 <LinearGradient
                 colors={['#ff4d4d', '#E50914', '#8f0000']}
@@ -253,6 +368,23 @@ export default function DetailsScreen() {
                     end={{ x: 0.5, y: 0.5 }}
                     style={StyleSheet.absoluteFill}
                 />
+                </LinearGradient>
+            </TouchableOpacity>
+              )
+          ) : (
+            <TouchableOpacity 
+                style={[styles.playButton, { opacity: 1 }]} 
+                activeOpacity={0.8}
+                onPress={() => router.push('/subscription')}
+            >
+                <LinearGradient
+                colors={['#FFD700', '#FFC107', '#FFA000']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.playButtonGradient}
+                >
+                <Ionicons name="lock-closed" size={24} color="#000" />
+                <Text style={[styles.playButtonText, { color: '#000' }]}>Subscribe to Watch</Text>
                 </LinearGradient>
             </TouchableOpacity>
           )}
@@ -317,23 +449,53 @@ export default function DetailsScreen() {
 
         {/* Episodes List */}
         <View style={styles.episodesList}>
-          {EPISODES.map((ep) => (
-            <TouchableOpacity key={ep.id} style={styles.episodeItem} activeOpacity={0.7}>
+          {realEpisodes.length > 0 ? (
+            realEpisodes.map((ep) => (
+            <TouchableOpacity 
+                key={ep.id} 
+                style={styles.episodeItem} 
+                activeOpacity={0.7}
+                onPress={() => handleEpisodePlay(ep)}
+            >
               <View style={styles.episodeImageContainer}>
-                <Image source={{ uri: ep.image }} style={styles.episodeImage} />
+                <Image source={{ uri: ep.thumbnailUrl || ep.image || 'https://via.placeholder.com/150' }} style={styles.episodeImage} />
                 <View style={styles.playOverlay}>
-                   <Ionicons name="play-circle-outline" size={32} color="#fff" />
+                   {ep.isFree ? (
+                        <Ionicons name="play-circle" size={32} color="#46d369" /> 
+                   ) : (
+                       canWatch ? (
+                           <Ionicons name="play-circle-outline" size={32} color="#fff" />
+                       ) : (
+                           <Ionicons name="lock-closed" size={24} color="#E50914" />
+                       )
+                   )}
                 </View>
+                {/* Free Badge */}
+                {ep.isFree && (
+                    <View style={{
+                        position: 'absolute',
+                        top: 4,
+                        left: 4,
+                        backgroundColor: '#46d369', // Green
+                        paddingHorizontal: 4,
+                        borderRadius: 2,
+                    }}>
+                        <Text style={{  color: '#000', fontSize: 8, fontWeight: 'bold' }}>FREE</Text>
+                    </View>
+                )}
               </View>
               <View style={styles.episodeInfo}>
                 <View style={styles.episodeHeader}>
-                  <Text style={styles.episodeTitle}>{ep.id}. {ep.title}</Text>
-                  <Text style={styles.episodeDuration}>{ep.duration}</Text>
+                  <Text style={styles.episodeTitle}>{ep.episodeNumber}. {ep.title}</Text>
+                  <Text style={styles.episodeDuration}>{ep.runtime}</Text>
                 </View>
-                <Text style={styles.episodeDesc} numberOfLines={3}>{ep.desc}</Text>
+                <Text style={styles.episodeDesc} numberOfLines={3}>{ep.synopsis}</Text>
               </View>
             </TouchableOpacity>
-          ))}
+          ))
+          ) : (
+              <Text style={{ color: '#666', padding: 20, textAlign: 'center' }}>No episodes found.</Text>
+          )}
         </View>
 
         <View style={{ height: 50 }} />

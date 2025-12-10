@@ -11,6 +11,7 @@ import {
     Text,
     TouchableOpacity,
     View,
+    RefreshControl // Import
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -77,7 +78,21 @@ export default function ProfileScreen() {
         <Loader isLoading={isLoading} />
         <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
         
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <ScrollView 
+          showsVerticalScrollIndicator={false} 
+          contentContainerStyle={styles.scrollContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={isLoading}
+              onRefresh={async () => {
+                await Promise.all([loadUserProfile(), loadWatchlist()]);
+              }}
+              tintColor="#E50914"
+              colors={['#E50914']}
+              progressBackgroundColor="#1a1a1a"
+            />
+          }
+        >
           
           {/* Header / Profile Info */}
           <LinearGradient
@@ -168,7 +183,7 @@ export default function ProfileScreen() {
                 activeOpacity={0.7}
                 onPress={() => {
                   if (item.label === 'Subscription Plan') {
-                    router.push('/vip');
+                    router.push('/subscription');
                   }
                 }}
               >

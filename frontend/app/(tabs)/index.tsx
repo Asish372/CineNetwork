@@ -16,7 +16,8 @@ import {
     Text,
     TouchableOpacity,
     View,
-    RefreshControl
+    RefreshControl,
+    Alert // Import Alert
 } from 'react-native';
 import { useTheme } from '../../src/context/ThemeContext';
 
@@ -42,6 +43,7 @@ import ScreenTransition from '../../src/components/ScreenTransition';
 import contentService from '../../src/services/contentService';
 import { useFocusEffect } from 'expo-router';
 import playbackService from '../../src/services/playbackService';
+import socketService from '../../src/services/socketService';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -52,16 +54,12 @@ export default function HomeScreen() {
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   
-  // Data States
-  const [trendingData, setTrendingData] = useState<any[]>([]);
-  const [newReleasesData, setNewReleasesData] = useState<any[]>([]);
-  const [actionData, setActionData] = useState<any[]>([]);
-  const [comedyData, setComedyData] = useState<any[]>([]);
-  const [scifiData, setScifiData] = useState<any[]>([]);
-  const [docData, setDocData] = useState<any[]>([]);
-  const [horrorData, setHorrorData] = useState<any[]>([]);
+  // Dynamic Data States
   const [heroSlides, setHeroSlides] = useState<any[]>([]);
+  const [sections, setSections] = useState<any[]>([]);
   const [continueWatchingData, setContinueWatchingData] = useState<any[]>([]);
+  const [recommendations, setRecommendations] = useState<any[]>([]);
+  const [isVip, setIsVip] = useState(false); // VIP State
 
   const scrollViewRef = useRef<ScrollView>(null);
   const notificationAnim = useRef(new Animated.Value(0)).current;
@@ -69,71 +67,110 @@ export default function HomeScreen() {
   useFocusEffect(
     React.useCallback(() => {
       loadContent();
+      
+      // Connect to Socket
+      socketService.connect();
+      
+      // Listen for updates
+      const unsubscribe = socketService.on('layout_updated', (data: any) => {
+        if (data.page === 'home') {
+          console.log('Received Home Layout Update!', data);
+          Alert.alert('Update Received', 'Refreshing Home Layout...'); // Visible feedback
+          loadContent(); // Reload content
+        }
+      });
+
+      return () => {
+        unsubscribe(); // Unsubscribe on blur (optional, or keep generic)
+      };
     }, [])
   );
 
   const loadContent = async () => {
-    // 1. Fetch Home Content (Categories)
     try {
-      console.log('Fetching home content...');
-      const categories = await contentService.getHomeContent();
+      setIsLoading(true);
       
-      // Map categories to sections
-      const trending = categories.find((c: any) => c.title === 'Trending Now')?.Contents || [];
-      const newReleases = categories.find((c: any) => c.title === 'New Releases')?.Contents || [];
-      const action = categories.find((c: any) => c.title === 'Action Movies')?.Contents || [];
-      const comedy = categories.find((c: any) => c.title === 'Comedy Hits')?.Contents || [];
-      const scifi = categories.find((c: any) => c.title === 'Sci-Fi & Fantasy')?.Contents || [];
-      const docs = categories.find((c: any) => c.title === 'Documentaries')?.Contents || [];
-      const horror = categories.find((c: any) => c.title === 'Horror')?.Contents || [];
-      
-      setTrendingData(trending.length > 0 ? trending : TRENDING_NOW);
-      setNewReleasesData(newReleases.length > 0 ? newReleases : NEW_RELEASES);
-      setActionData(action.length > 0 ? action : ACTION_MOVIES);
-      setComedyData(comedy.length > 0 ? comedy : COMEDY_MOVIES);
-      setScifiData(scifi.length > 0 ? scifi : SCIFI_MOVIES);
-      setDocData(docs.length > 0 ? docs : DOCUMENTARIES);
-      setHorrorData(horror.length > 0 ? horror : HORROR_MOVIES);
-
-      // Use Trending for Hero Slides if available
-      if (trending.length > 0) {
-        setHeroSlides(trending.slice(0, 5));
+      // 0. Check User Status (Fetch fresh from API)
+      const user = await import('../../src/services/authService').then(m => m.default.getMe()); // Force DB fetch
+      if (user && (user.isVip || user.subscription?.status === 'active')) {
+          setIsVip(true);
       } else {
-        setHeroSlides(HERO_SLIDES);
+          setIsVip(false);
       }
+
+      // 1. Fetch Dynamic Layout
+      const layout = await contentService.getLayout('home');
+      
+      console.log('Layout Response:', JSON.stringify(layout, null, 2)); // Debug Log
+      
+      if (layout) {
+        setHeroSlides(Array.isArray(layout.heroContent) ? layout.heroContent : []);
+        console.log('Hero Slides set:', layout.heroContent?.length); // Debug Log
+        
+        // Process sections
+        const sectionsToProcess = Array.isArray(layout.sections) ? layout.sections : [];
+        const processedSections = sectionsToProcess.map((section: any) => {
+           // If it's a manual collection, contentIds is already populated
+           // If it's auto (trending, new_arrivals), contentIds might be empty or pre-populated by backend
+           // For now, we assume the backend populates 'contentIds' even for auto sections when serving the layout
+           // OR we might need to fetch them if they are empty. 
+           // Based on Admin Panel implementation, 'contentIds' are arrays of objects.
+           return section;
+        });
+        setSections(processedSections);
+        console.log('Sections set:', processedSections.length); // Debug Log
+      } else {
+        // Fallback or Empty State
+        setHeroSlides([]);
+        setSections([]);
+        console.log('No layout found, setting empty');
+      }
+
+      // 2. Fetch User Specific Data (Continue Watching)
+      if (user) {
+          try {
+            const cw = await playbackService.syncWithBackend();
+            console.log('Continue Watching Data:', cw?.length); // Debug Log
+            setContinueWatchingData(cw || []);
+          } catch (e) {
+            console.log('CW Error', e);
+            setContinueWatchingData([]);
+          }
+      } else {
+          setContinueWatchingData([]);
+      }
+
     } catch (error) {
       console.error('Failed to load home content:', error);
-      setTrendingData(TRENDING_NOW);
-      setNewReleasesData(NEW_RELEASES);
-      setActionData(ACTION_MOVIES);
-      setComedyData(COMEDY_MOVIES);
-      setScifiData(SCIFI_MOVIES);
-      setDocData(DOCUMENTARIES);
-      setHorrorData(HORROR_MOVIES);
-      setHeroSlides(HERO_SLIDES);
-    }
-
-    // 2. Fetch Continue Watching (Independently)
-    try {
-        console.log('Fetching continue watching...');
-        const continueWatching = await playbackService.syncWithBackend();
-        console.log('Continue Watching Data:', JSON.stringify(continueWatching, null, 2));
-        setContinueWatchingData(continueWatching);
-    } catch (error) {
-        console.error('Failed to load continue watching:', error);
-        setContinueWatchingData([]);
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Helper to merge dynamic sections with user specific data
+  const renderDynamicSections = () => {
+    return sections.map((section, index) => {
+      if (section.type === 'continue_watching') {
+         if (continueWatchingData.length === 0) return null;
+         return renderContinueWatching(section.title);
+      }
+      
+      // For other sections, we expect 'contentIds' to contain the items
+      if (!section.contentIds || section.contentIds.length === 0) return null;
+      
+      return renderSection(section.title, section.contentIds, section.type);
+    });
+  };
+
+  // ... (Auto-slide and Animation logic remains same)
   // Create an extended array with duplicates at both ends for bidirectional infinite scroll
-  const slidesToUse = heroSlides.length > 0 ? heroSlides : HERO_SLIDES;
-  const extendedSlides = [
+  const slidesToUse = Array.isArray(heroSlides) && heroSlides.length > 0 ? heroSlides : [];
+  // Only create extended slides if we have slides
+  const extendedSlides = slidesToUse.length > 0 ? [
     { ...slidesToUse[slidesToUse.length - 1], id: 'duplicate-last' },
     ...slidesToUse,
     { ...slidesToUse[0], id: 'duplicate-first' }
-  ];
+  ] : [];
 
   // Notification Bell Animation
   React.useEffect(() => {
@@ -160,15 +197,16 @@ export default function HomeScreen() {
 
   // Initialize scroll position to the first real slide (index 1)
   React.useEffect(() => {
-    if (width > 0) {
+    if (width > 0 && slidesToUse.length > 0) {
       setTimeout(() => {
         scrollViewRef.current?.scrollTo({ x: width, animated: false });
       }, 0);
     }
-  }, [width]);
+  }, [width, slidesToUse]);
 
   // Auto-slide logic
   React.useEffect(() => {
+    if (slidesToUse.length === 0) return;
     const interval = setInterval(() => {
       if (isVideoPlaying) return; // Pause auto-scroll if video is playing
 
@@ -234,8 +272,8 @@ export default function HomeScreen() {
     }
   };
 
-  const renderSection = (title: string, data: any[], isHorizontal = true) => (
-    <View style={styles.sectionContainer}>
+  const renderSection = (title: string, data: any[], type: string) => (
+    <View key={title} style={styles.sectionContainer}>
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>{title}</Text>
         <TouchableOpacity onPress={() => router.push({ pathname: '/section/[title]', params: { title } })}>
@@ -244,7 +282,7 @@ export default function HomeScreen() {
       </View>
       
       <ScrollView 
-        horizontal={isHorizontal} 
+        horizontal={true} 
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.listContent}
       >
@@ -260,31 +298,27 @@ export default function HomeScreen() {
                   title: item.title,
                   subtitle: item.genre || item.subtitle || 'Movie',
                   video: item.videoUrl || item.video || '',
-                  image: item.thumbnailUrl || item.image,
+                  image: item.thumbnailUrl || item.posterUrl || item.image,
                   likes: item.likes ? item.likes.toString() : '10K',
-                  comments: '500'
+                  comments: '500',
+                  isVip: item.isVip ? 'true' : 'false'
                 }
               })}
           >
             <Image
-              source={{ uri: item.thumbnailUrl || item.image }}
+              source={{ uri: item.thumbnailUrl || item.posterUrl || item.image }}
               style={styles.cardImage}
               contentFit="cover"
               transition={200}
             />
-            {/* New Badge for first few items in New Releases */}
-            {title === 'New Releases' && index < 2 && (
+            
+            {/* New Badge for New Arrivals */}
+            {type === 'new_arrivals' && index < 3 && (
               <View style={styles.newBadge}>
                 <Text style={styles.newBadgeText}>NEW</Text>
               </View>
             )}
-            {/* VIP Badge for some items */}
-            {(index % 3 === 0) && (
-              <View style={styles.vipBadge}>
-              <Ionicons name="diamond" size={10} color="#000" />
-              <Text style={styles.vipText}>VIP</Text>
-              </View>
-            )}
+            
             <LinearGradient
                 colors={['transparent', 'rgba(0,0,0,0.9)']}
                 style={styles.cardGradient}
@@ -293,6 +327,82 @@ export default function HomeScreen() {
             </LinearGradient>
           </TouchableOpacity>
         ))}
+      </ScrollView>
+    </View>
+  );
+
+  const renderContinueWatching = (title: string) => (
+    <View key="continue-watching" style={styles.sectionContainer}>
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+      </View>
+      <ScrollView 
+        horizontal 
+        showsHorizontalScrollIndicator={false} 
+        contentContainerStyle={styles.listContent}
+      >
+        {continueWatchingData.map((item) => {
+          if (!item.Content) return null;
+          return (
+            <TouchableOpacity 
+                key={item.id} 
+                style={styles.cardContainer} 
+                activeOpacity={0.7}
+                onPress={() => router.push({
+                pathname: '/details/[id]',
+                params: { 
+                    id: item.Content.id,
+                    title: item.Content.title,
+                    subtitle: 'Continue Watching',
+                    video: item.Content.videoUrl,
+                    image: item.Content.thumbnailUrl,
+                    likes: '5K',
+                    comments: '200',
+                    position: item.progress.toString()
+                }
+                })}
+            >
+                <Image
+                source={{ uri: item.Content.thumbnailUrl }}
+                style={styles.cardImage}
+                contentFit="cover"
+                />
+                {/* Progress Bar Overlay */}
+                <View style={{
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                right: 0,
+                height: 4,
+                backgroundColor: 'rgba(255,255,255,0.3)'
+                }}>
+                <View style={{
+                    width: `${Math.min((item.progress / 30000) * 100, 100)}%`, 
+                    height: '100%',
+                    backgroundColor: '#E50914'
+                }} />
+                </View>
+
+                {/* Play Icon Overlay */}
+                <View style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                transform: [{ translateX: -15 }, { translateY: -15 }],
+                width: 30,
+                height: 30,
+                borderRadius: 15,
+                backgroundColor: 'rgba(0,0,0,0.6)',
+                justifyContent: 'center',
+                alignItems: 'center',
+                borderWidth: 1,
+                borderColor: '#fff'
+                }}>
+                <Ionicons name="play" size={16} color="#fff" style={{ marginLeft: 2 }} />
+                </View>
+            </TouchableOpacity>
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -306,8 +416,6 @@ export default function HomeScreen() {
           onClose={() => setIsNotificationOpen(false)} 
         />
         <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
-
-
         
         {/* Header */}
         <SafeAreaView style={styles.headerContainer}>
@@ -325,13 +433,14 @@ export default function HomeScreen() {
               <Text style={styles.headerTitle}>CINE NETWORK</Text>
             </View>
             <View style={styles.headerIcons}>
+              {!isVip && (
               <TouchableOpacity 
                 style={styles.subscribeButton}
                 activeOpacity={0.8}
-                onPress={() => router.push('/auth/login')}
+                onPress={() => router.push('/subscription')}
               >
                 <LinearGradient
-                  colors={['#FFEC8B', '#FFD700', '#FFA500']} // Lighter top for bubble shine
+                  colors={['#FFEC8B', '#FFD700', '#FFA500']}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 0, y: 1 }}
                   style={styles.subscribeGradient}
@@ -340,6 +449,7 @@ export default function HomeScreen() {
                   <Text style={styles.subscribeText}>Subscribe</Text>
                 </LinearGradient>
               </TouchableOpacity>
+              )}
 
               <TouchableOpacity 
                 style={styles.iconButton}
@@ -362,6 +472,7 @@ export default function HomeScreen() {
           }
         >
           {/* Hero Carousel */}
+          {slidesToUse.length > 0 && (
           <View style={styles.heroContainer}>
             <ScrollView
               ref={scrollViewRef}
@@ -375,7 +486,7 @@ export default function HomeScreen() {
             >
               {extendedSlides.map((slide, index) => (
                 <HeroSlide
-                  key={slide.id || index}
+                  key={slide.id ? `${slide.id}-${index}` : index}
                   item={slide}
                   onPlay={() => setIsVideoPlaying(true)}
                   onStop={() => setIsVideoPlaying(false)}
@@ -386,9 +497,10 @@ export default function HomeScreen() {
                       title: slide.title,
                       subtitle: slide.genre || slide.subtitle,
                       video: slide.videoUrl || slide.video,
-                      image: slide.thumbnailUrl || slide.image,
+                      image: slide.thumbnailUrl || slide.posterUrl || slide.image,
                       likes: slide.likes ? slide.likes.toString() : '12.5K',
-                      comments: '840'
+                      comments: '840',
+                      isVip: slide.isVip ? 'true' : 'false'
                     }
                   })}
                 />
@@ -410,6 +522,7 @@ export default function HomeScreen() {
               ))}
             </View>
           </View>
+          )}
 
           {/* Categories */}
           <View style={styles.categoriesWrapper}>
@@ -438,91 +551,8 @@ export default function HomeScreen() {
             </ScrollView>
           </View>
 
-          {/* Continue Watching */}
-          {continueWatchingData.length > 0 && (
-            <View style={styles.sectionContainer}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Continue Watching</Text>
-              </View>
-              <ScrollView 
-                horizontal 
-                showsHorizontalScrollIndicator={false} 
-                contentContainerStyle={styles.listContent}
-              >
-                {continueWatchingData.map((item) => {
-                  if (!item.Content) return null;
-                  return (
-                    <TouchableOpacity 
-                        key={item.id} 
-                        style={styles.cardContainer} 
-                        activeOpacity={0.7}
-                        onPress={() => router.push({
-                        pathname: '/details/[id]',
-                        params: { 
-                            id: item.Content.id,
-                            title: item.Content.title,
-                            subtitle: 'Continue Watching',
-                            video: item.Content.videoUrl,
-                            image: item.Content.thumbnailUrl,
-                            likes: '5K',
-                            comments: '200',
-                            position: item.progress.toString()
-                        }
-                        })}
-                    >
-                        <Image
-                        source={{ uri: item.Content.thumbnailUrl }}
-                        style={styles.cardImage}
-                        contentFit="cover"
-                        />
-                        {/* Progress Bar Overlay */}
-                        <View style={{
-                        position: 'absolute',
-                        bottom: 0,
-                        left: 0,
-                        right: 0,
-                        height: 4,
-                        backgroundColor: 'rgba(255,255,255,0.3)'
-                        }}>
-                        <View style={{
-                            width: `${Math.min((item.progress / 30000) * 100, 100)}%`, 
-                            height: '100%',
-                            backgroundColor: '#E50914'
-                        }} />
-                        </View>
-
-                        {/* Play Icon Overlay */}
-                        <View style={{
-                        position: 'absolute',
-                        top: '50%',
-                        left: '50%',
-                        transform: [{ translateX: -15 }, { translateY: -15 }],
-                        width: 30,
-                        height: 30,
-                        borderRadius: 15,
-                        backgroundColor: 'rgba(0,0,0,0.6)',
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                        borderWidth: 1,
-                        borderColor: '#fff'
-                        }}>
-                        <Ionicons name="play" size={16} color="#fff" style={{ marginLeft: 2 }} />
-                        </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            </View>
-          )}
-
-          {/* Sections */}
-          {renderSection('Trending Now', trendingData)}
-          {renderSection('New Releases', newReleasesData)}
-          {renderSection('Action Movies', actionData)}
-          {renderSection('Comedy Hits', comedyData)}
-          {renderSection('Sci-Fi & Fantasy', scifiData)}
-          {renderSection('Documentaries', docData)}
-          {renderSection('Horror', horrorData)}
+          {/* Dynamic Sections */}
+          {renderDynamicSections()}
 
         </ScrollView>
       </View>

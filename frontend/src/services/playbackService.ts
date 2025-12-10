@@ -22,12 +22,16 @@ class PlaybackService {
     try {
       const response = await api.get('/content/continue-watching');
       const history = response.data;
-      history.forEach((item: any) => {
-        if (item.Content && item.Content.id) {
-            this.positions[item.Content.id.toString()] = item.progress;
-        }
-      });
-      console.log('Synced playback positions from backend');
+      if (Array.isArray(history)) {
+          history.forEach((item: any) => {
+            if (item.Content && item.Content.id) {
+                this.positions[item.Content.id.toString()] = item.progress;
+            }
+          });
+          console.log('Synced playback positions from backend');
+      } else {
+        console.warn('Sync response is not an array', history);
+      }
       return history;
     } catch (error) {
       console.error('Failed to sync playback positions:', error);

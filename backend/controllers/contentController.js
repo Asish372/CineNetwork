@@ -58,6 +58,10 @@ const getContentById = async (req, res) => {
   try {
     const content = await Content.findByPk(req.params.id);
     if (content) {
+      if (content.showFakeStats) {
+          content.views = content.fakeViews;
+          content.likes = content.fakeLikes;
+      }
       res.json(content);
     } else {
       res.status(404).json({ message: 'Content not found' });
@@ -267,6 +271,129 @@ const getContentByCategory = async (req, res) => {
   }
 };
 
+// @desc    Create New Content
+// @route   POST /api/content
+// @access  Private (Admin)
+const createContent = async (req, res) => {
+  try {
+    const content = await Content.create(req.body);
+    
+    // Emit Real-time Event
+    const io = req.app.get('io');
+    if (io) {
+        io.emit('content_created', {
+            id: content.id,
+            title: content.title,
+            type: content.type,
+            createdAt: content.createdAt
+        });
+    }
+
+    res.status(201).json(content);
+  } catch (error) {
+    console.error('Error creating content:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Update Content
+// @route   PUT /api/content/:id
+// @access  Private (Admin)
+const updateContent = async (req, res) => {
+  try {
+    const content = await Content.findByPk(req.params.id);
+    if (content) {
+      await content.update(req.body);
+      res.json(content);
+    } else {
+      res.status(404).json({ message: 'Content not found' });
+    }
+  } catch (error) {
+    console.error('Error updating content:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Delete Content
+// @route   DELETE /api/content/:id
+// @access  Private (Admin)
+const deleteContent = async (req, res) => {
+  try {
+    const content = await Content.findByPk(req.params.id);
+    if (content) {
+      await content.destroy();
+      res.json({ message: 'Content removed' });
+    } else {
+      res.status(404).json({ message: 'Content not found' });
+    }
+  } catch (error) {
+    console.error('Error deleting content:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Create Category
+// @route   POST /api/content/category
+// @access  Private (Admin)
+const createCategory = async (req, res) => {
+  try {
+    const { title, displayOrder } = req.body;
+    const category = await Category.create({ title, displayOrder });
+    res.status(201).json(category);
+  } catch (error) {
+    console.error('Error creating category:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Delete Category
+// @route   DELETE /api/content/category/:id
+// @access  Private (Admin)
+const deleteCategory = async (req, res) => {
+  try {
+    const category = await Category.findByPk(req.params.id);
+    if (category) {
+      await category.destroy();
+      res.json({ message: 'Category removed' });
+    } else {
+      res.status(404).json({ message: 'Category not found' });
+    }
+  } catch (error) {
+    console.error('Error deleting category:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Bulk Actions (Publish, Unpublish, Delete)
+const bulkAction = async (req, res) => {
+    const { action, ids } = req.body; // action: 'publish', 'archive', 'delete'
+    try {
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ message: 'No items selected' });
+        }
+
+        if (action === 'delete') {
+            await Content.destroy({ where: { id: ids } });
+            return res.json({ message: `Deleted ${ids.length} items` });
+        }
+
+        const updates = {};
+        if (action === 'publish') updates.status = 'published';
+        if (action === 'archive') updates.status = 'archived';
+        if (action === 'draft') updates.status = 'draft';
+
+        if (Object.keys(updates).length > 0) {
+            await Content.update(updates, { where: { id: ids } });
+            return res.json({ message: `Updated ${ids.length} items to ${action}` });
+        }
+
+        res.status(400).json({ message: 'Invalid action' });
+    } catch (error) {
+        console.error('Bulk action error:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+};
+
 module.exports = {
   getHomeContent,
   getMovies,
@@ -275,5 +402,11 @@ module.exports = {
   updateProgress,
   getContinueWatching,
   searchContent,
-  getContentByCategory
+  getContentByCategory,
+  createContent,
+  updateContent,
+  deleteContent,
+  createCategory,
+  deleteCategory,
+  bulkAction
 };

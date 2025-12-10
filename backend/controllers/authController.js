@@ -126,6 +126,17 @@ const verifySignup = async (req, res) => {
       await otpRecord.destroy();
 
       if (user) {
+        // Emit Real-time Event
+        const io = req.app.get('io');
+        if (io) {
+            io.emit('user_registered', {
+                id: user.id,
+                fullName: user.fullName,
+                email: user.email,
+                createdAt: user.createdAt
+            });
+        }
+
         res.status(201).json({
           _id: user.id,
           fullName: user.fullName,
@@ -151,23 +162,39 @@ const verifySignup = async (req, res) => {
 // @route   POST /api/auth/login
 // @access  Public
 const login = async (req, res) => {
-  const { email, password } = req.body;
+  let { email, password } = req.body;
+  console.log('Login attempt:', { email, password });
+
+  // Alias 'admin' to the admin email
+  if (email === 'admin') {
+    email = 'admin@cinenetwork.com';
+    console.log('Aliased to:', email);
+  }
 
   try {
-    const user = await User.findOne({ where: { email } });
+    const { UserSubscription } = require('../models');
+    const user = await User.findOne({ 
+        where: { email },
+        include: [{ model: UserSubscription }]
+    });
+    console.log('User found:', user ? user.email : 'No user');
 
     if (user && (await user.matchPassword(password))) {
+      console.log('Password matched');
       res.json({
         _id: user.id,
         fullName: user.fullName,
         email: user.email,
         phone: user.phone,
+        subscription: user.UserSubscription, // Send subscription info
         token: generateToken(user.id),
       });
     } else {
+      console.log('Password match failed');
       res.status(401).json({ message: 'Invalid email or password' });
     }
   } catch (error) {
+    console.error('Login error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -368,7 +395,24 @@ const resetPassword = async (req, res) => {
 // @route   GET /api/auth/me
 // @access  Private
 const getMe = async (req, res) => {
-  res.status(200).json(req.user);
+  try {
+      const { UserSubscription, SubscriptionPlan } = require('../models');
+      const user = await User.findByPk(req.user.id, {
+          attributes: { exclude: ['password', 'otp', 'otpExpires'] },
+          include: [{ 
+              model: UserSubscription,
+              include: [SubscriptionPlan] // Nested include
+          }]
+      });
+      // Flatten response for frontend consistency
+      const userData = user.toJSON();
+      userData.subscription = userData.UserSubscription; // Alias
+      delete userData.UserSubscription;
+      
+      res.status(200).json(userData);
+  } catch (error) {
+      res.status(500).json({ message: 'Server Error' });
+  }
 };
 
 module.exports = {

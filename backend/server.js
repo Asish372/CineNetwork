@@ -6,15 +6,16 @@ const rateLimit = require('express-rate-limit');
 const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
+const { sequelize } = require('./models');
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 
 // Middleware
-app.use(helmet()); // Security Headers
+app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
@@ -32,28 +33,37 @@ app.use('/api/auth', authLimiter);
 // Request Logging Middleware
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  // Only log body if it exists and is not empty
   if (req.body && Object.keys(req.body).length > 0) {
     console.log('Body:', req.body);
   }
   next();
 });
 
-app.get('/', (req, res) => {
-  res.send('API is running...');
-});
-
-const { sequelize } = require('./models');
+// Import Routes
 const authRoutes = require('./routes/authRoutes');
 const contentRoutes = require('./routes/contentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const videoRoutes = require('./routes/videoRoutes');
+const seriesRoutes = require('./routes/seriesRoutes');
+
+// Mount Routes
+app.get('/', (req, res) => {
+  res.send('API is running...');
+});
 
 app.use('/api/auth', authRoutes);
 app.use('/api/content', contentRoutes);
 app.use('/api/interactions', require('./routes/interactionRoutes'));
-app.use('/api/admin', adminRoutes);
+app.use('/api/admin', adminRoutes); // Admin Dashboard & User Management
 app.use('/api/video', videoRoutes);
+app.use('/api/series', seriesRoutes);
+app.use('/api/upload', require('./routes/uploadRoutes')); // File Uploads
+app.use('/api/secure', require('./routes/secureRoutes'));
+app.use('/api/layout', require('./routes/layoutRoutes'));
+app.use('/api/plans', require('./routes/planRoutes'));
+
+// Serve Uploaded Files Statically
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
 
 // Create HTTP server
 const server = http.createServer(app);
@@ -84,7 +94,7 @@ server.listen(PORT, async () => {
   try {
     await sequelize.authenticate();
     console.log('Database connected successfully.');
-    // await sequelize.sync({ alter: true }); // Sync models with database
+    await sequelize.sync(); // Sync models with database
     console.log('Database synced.');
   } catch (error) {
     console.error('Unable to connect to the database:', error);

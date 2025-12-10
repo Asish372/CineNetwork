@@ -1,12 +1,27 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from './api';
+import { Platform } from 'react-native';
+
+// Helper to store token securely
+const setToken = async (token: string) => {
+  if (Platform.OS === 'web') {
+    await AsyncStorage.setItem('token', token);
+  } else {
+    try {
+      const SecureStore = require('expo-secure-store');
+      await SecureStore.setItemAsync('token', token);
+    } catch (e) {
+      console.error('SecureStore setItem error:', e);
+    }
+  }
+};
 
 export const authService = {
   signup: async (userData: any) => {
     // This is now just for legacy or if we want to skip OTP (not used in new flow)
     const response = await api.post('/auth/signup', userData);
     if (response.data.token) {
-      await AsyncStorage.setItem('token', response.data.token);
+      await setToken(response.data.token);
       await AsyncStorage.setItem('user', JSON.stringify(response.data));
     }
     return response.data;
@@ -26,7 +41,7 @@ export const authService = {
   login: async (credentials: any) => {
     const response = await api.post('/auth/login', credentials);
     if (response.data.token) {
-      await AsyncStorage.setItem('token', response.data.token);
+      await setToken(response.data.token);
       await AsyncStorage.setItem('user', JSON.stringify(response.data));
     }
     return response.data;
@@ -40,7 +55,7 @@ export const authService = {
   verifyLoginOtp: async (phone: string, otp: string) => {
     const response = await api.post('/auth/verify-login-otp', { phone, otp });
     if (response.data.token) {
-      await AsyncStorage.setItem('token', response.data.token);
+      await setToken(response.data.token);
       await AsyncStorage.setItem('user', JSON.stringify(response.data));
     }
     return response.data;
@@ -63,16 +78,32 @@ export const authService = {
 
   getMe: async () => {
     try {
+      const token = await authService.getToken();
+      if (!token) return null; // No token, no need to call API
+      
       const response = await api.get('/auth/me');
       return response.data;
-    } catch (error) {
-      console.error('Error fetching user profile:', error);
+    } catch (error: any) {
+      // If 401, just return null (Guest or Expired), don't log scary error
+      if (error.response && error.response.status === 401) {
+          return null;
+      }
+      console.log('Error fetching user profile:', error.message);
       return null;
     }
   },
 
   logout: async () => {
-    await AsyncStorage.removeItem('token');
+    if (Platform.OS === 'web') {
+        await AsyncStorage.removeItem('token');
+    } else {
+        try {
+          const SecureStore = require('expo-secure-store');
+          await SecureStore.deleteItemAsync('token');
+        } catch (e) {
+          console.error('SecureStore delete error:', e);
+        }
+    }
     await AsyncStorage.removeItem('user');
   },
 
@@ -81,12 +112,19 @@ export const authService = {
     if (userStr) {
       return JSON.parse(userStr);
     }
-    // Fallback: try to fetch from API if token exists
-    const token = await AsyncStorage.getItem('token');
-    if (token) {
-        return await authService.getMe();
-    }
     return null;
+  },
+  
+  getToken: async () => {
+    if (Platform.OS === 'web') {
+        return await AsyncStorage.getItem('token');
+    }
+    try {
+      const SecureStore = require('expo-secure-store');
+      return await SecureStore.getItemAsync('token');
+    } catch (e) {
+      return null;
+    }
   }
 };
 

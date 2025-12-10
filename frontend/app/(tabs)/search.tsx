@@ -12,7 +12,8 @@ import {
     Text,
     TextInput,
     TouchableOpacity,
-    View
+    View,
+    RefreshControl // Import
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -94,7 +95,31 @@ export default function SearchScreen() {
             </BlurView>
           </View>
 
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+          <ScrollView 
+            showsVerticalScrollIndicator={false} 
+            contentContainerStyle={styles.scrollContent}
+            refreshControl={
+              <RefreshControl
+                refreshing={isLoading}
+                onRefresh={() => {
+                  // If there is a query, re-fetch. If not, maybe random delay or fetch mock trending again.
+                  if (searchQuery.length > 2) {
+                    setSearchQuery(searchQuery); // Re-trigger effect or better separate fetch
+                    // Force re-fetch manually
+                    setIsLoading(true);
+                    contentService.searchContent(searchQuery).then(setSearchResults).finally(() => setIsLoading(false));
+                  } else {
+                     // Simulate refresh for landing state
+                     setIsLoading(true);
+                     setTimeout(() => setIsLoading(false), 1500); 
+                  }
+                }}
+                tintColor="#E50914"
+                colors={['#E50914']}
+                progressBackgroundColor="#1a1a1a"
+              />
+            }
+          >
             
             {/* Search Results */}
             {searchQuery.length > 2 ? (

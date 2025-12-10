@@ -13,7 +13,8 @@ import {
     StyleSheet,
     Text,
     TouchableOpacity,
-    View
+    View,
+    RefreshControl // Import
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import NotificationPanel from '../../src/components/NotificationPanel';
@@ -26,51 +27,111 @@ import {
     SHORTS_TRENDING
 } from '../../src/data/mockData';
 import contentService from '../../src/services/contentService';
+import playbackService from '../../src/services/playbackService';
+import socketService from '../../src/services/socketService';
+import { Alert } from 'react-native';
 
 const { width } = Dimensions.get('window');
 
 export default function ShortsScreen() {
   const router = useRouter();
   const [activeSlide, setActiveSlide] = useState(0);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(true); // Auto-play initially
+  const [isVip, setIsVip] = useState(false); // VIP State
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
-  const [shorts, setShorts] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  
+  // Dynamic Data States
+  const [heroSlides, setHeroSlides] = useState<any[]>([]);
+  const [sections, setSections] = useState<any[]>([]);
+  const [continueWatchingData, setContinueWatchingData] = useState<any[]>([]);
+
   const scrollViewRef = useRef<ScrollView>(null);
   const notificationAnim = useRef(new Animated.Value(0)).current;
 
   React.useEffect(() => {
-    loadShorts();
+    loadContent();
+
+    // Connect to Socket
+    socketService.connect();
+
+    // Listen for updates
+    const unsubscribe = socketService.on('layout_updated', (data: any) => {
+      if (data.page === 'shorts') {
+        console.log('Received Shorts Layout Update!', data);
+        Alert.alert('Update Received', 'Refreshing Shorts Layout...');
+        loadContent();
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
-  const loadShorts = async () => {
+  const loadContent = async () => {
     try {
-      const data = await contentService.getShorts();
-      setShorts(data);
+      // 0. Check User Status (Fetch fresh from API)
+      const user = await import('../../src/services/authService').then(m => m.default.getMe()); // Force DB fetch
+      if (user && (user.isVip || user.subscription?.status === 'active')) {
+          setIsVip(true);
+      } else {
+          setIsVip(false);
+      }
+
+      setIsLoading(true);
+
+      // 1. Fetch Dynamic Layout
+      const layout = await contentService.getLayout('shorts');
+      
+      console.log('Shorts Layout Response:', JSON.stringify(layout, null, 2)); // Debug Log
+      
+      if (layout) {
+         setHeroSlides(Array.isArray(layout.heroContent) ? layout.heroContent : []);
+         setSections(Array.isArray(layout.sections) ? layout.sections : []);
+      } else {
+         // Fallback logic could go here if needed
+         setHeroSlides([]);
+         setSections([]);
+      }
+
+      // 2. Fetch Continue Watching
+      try {
+        const cw = await playbackService.syncWithBackend();
+        // Filter CW for Shorts? Or show all? Usually just recent.
+        // For shorts screen maybe strict filtering if we had content type.
+        setContinueWatchingData(cw || []);
+      } catch (e) {
+        console.error('CW Error', e);
+      }
+
     } catch (error) {
-      console.error('Failed to load shorts:', error);
+      console.error('Failed to load shorts content:', error);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Use fetched shorts or fallback to mock
-  const slidesToUse = shorts.length > 0 ? shorts : SHORTS_SLIDES;
+  // Use fetched shorts or fallback to mock (only if heroSlides empty, though we prefer strict)
+  // Ensure we always have an array even if state gets corrupted
+  const slidesToUse = Array.isArray(heroSlides) && heroSlides.length > 0 ? heroSlides : [];
 
   // Create an extended array with duplicates at both ends for bidirectional infinite scroll
-  const extendedSlides = [
+  // Only if we have slides
+  const extendedSlides = slidesToUse.length > 0 ? [
     { ...slidesToUse[slidesToUse.length - 1], id: 'duplicate-last' },
     ...slidesToUse,
     { ...slidesToUse[0], id: 'duplicate-first' }
-  ];
+  ] : [];
 
   // Initialize scroll position to the first real slide (index 1)
   React.useEffect(() => {
-    if (width > 0) {
+    if (width > 0 && slidesToUse.length > 0) {
       setTimeout(() => {
         scrollViewRef.current?.scrollTo({ x: width, animated: false });
       }, 0);
     }
-  }, [width]);
+  }, [width, slidesToUse]);
 
   // Notification Bell Animation
   React.useEffect(() => {
@@ -97,6 +158,7 @@ export default function ShortsScreen() {
 
   // Auto-slide logic
   React.useEffect(() => {
+    if (slidesToUse.length === 0) return;
     const interval = setInterval(() => {
       if (activeSlide < slidesToUse.length - 1) {
         // Move to next slide
@@ -167,6 +229,109 @@ export default function ShortsScreen() {
     });
   };
 
+  const renderDynamicSections = () => {
+    return sections.map((section, index) => {
+      // Handle Continue Watching
+      if (section.type === 'continue_watching') {
+         if (continueWatchingData.length === 0) return null;
+         return renderContinueWatching(section.title);
+      }
+      
+      // Handle Content Sections
+      if (!section.contentIds || section.contentIds.length === 0) return null;
+      
+      return (
+        <View key={section.id || index} style={styles.sectionContainer}>
+          <Text style={styles.sectionTitle}>{section.title}</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.listContent}>
+            {section.contentIds.map((item: any) => (
+               <TouchableOpacity 
+                  key={item.id} 
+                  style={styles.cardContainer} 
+                  activeOpacity={0.7}
+                  onPress={() => handlePlayShort(item.id)}
+                >
+                  <Image source={{ uri: item.thumbnailUrl || item.posterUrl || item.image }} style={styles.cardImage} contentFit="cover" />
+                  
+                  {section.type === 'new_arrivals' && (
+                     <View style={styles.newBadge}>
+                        <Text style={styles.newBadgeText}>NEW</Text>
+                     </View>
+                  )}
+                  
+                  <LinearGradient
+                    colors={['transparent', 'rgba(0,0,0,0.9)']}
+                    style={styles.cardGradient}
+                  >
+                    <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      );
+    });
+  };
+
+  const renderContinueWatching = (title: string) => (
+      <View key="continue-watching" style={styles.sectionContainer}>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>{title}</Text>
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.listContent}>
+          {continueWatchingData.map((item) => {
+             if (!item.Content) return null;
+             return (
+            <TouchableOpacity 
+              key={item.id} 
+              style={styles.cardContainer} 
+              activeOpacity={0.7}
+              onPress={() => handlePlayShort(item.Content.id)}
+            >
+              <Image
+                source={{ uri: item.Content.thumbnailUrl || item.Content.posterUrl }}
+                style={styles.cardImage}
+                contentFit="cover"
+              />
+              {/* Progress Bar Overlay */}
+              <View style={{
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                right: 0,
+                height: 4,
+                backgroundColor: 'rgba(255,255,255,0.3)'
+              }}>
+                <View style={{
+                  width: `${Math.min((item.progress / 30000) * 100, 100)}%`, // Mock Duration
+                  height: '100%',
+                  backgroundColor: '#E50914'
+                }} />
+              </View>
+
+               {/* Play Icon Overlay */}
+               <View style={{
+                position: 'absolute',
+                top: '50%',
+                left: '50%',
+                transform: [{ translateX: -15 }, { translateY: -15 }],
+                width: 30,
+                height: 30,
+                borderRadius: 15,
+                backgroundColor: 'rgba(0,0,0,0.6)',
+                justifyContent: 'center',
+                alignItems: 'center',
+                borderWidth: 1,
+                borderColor: '#fff'
+              }}>
+                <Ionicons name="play" size={16} color="#fff" style={{ marginLeft: 2 }} />
+              </View>
+            </TouchableOpacity>
+          )})}
+        </ScrollView>
+      </View>
+  );
+
   return (
     <ScreenTransition>
       <View style={styles.container}>
@@ -188,22 +353,23 @@ export default function ShortsScreen() {
               <Text style={styles.headerTitle}>CINE NETWORK</Text>
             </View>
             <View style={styles.headerIcons}>
-              <TouchableOpacity 
-                style={styles.subscribeButton}
-                activeOpacity={0.8}
-                onPress={() => router.push('/auth/login')}
-              >
-                <LinearGradient
-                  colors={['#FFEC8B', '#FFD700', '#FFA500']} // Lighter top for bubble shine
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 0, y: 1 }}
-                  style={styles.subscribeGradient}
+              {!isVip && (
+                <TouchableOpacity 
+                  style={styles.subscribeButton}
+                  activeOpacity={0.8}
+                  onPress={() => router.push('/subscription')}
                 >
-                  <Ionicons name="diamond-outline" size={14} color="#000" />
-                  <Text style={styles.subscribeText}>Subscribe</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-
+                  <LinearGradient
+                    colors={['#FFD700', '#FFA500']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.subscribeGradient}
+                  >
+                    <Ionicons name="diamond" size={12} color="black" />
+                    <Text style={styles.subscribeText}>Premium</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity 
                 style={styles.iconButton}
                 onPress={() => setIsNotificationOpen(true)}
@@ -220,10 +386,19 @@ export default function ShortsScreen() {
           style={styles.scrollView}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{ paddingBottom: 100 }}
+          refreshControl={
+            <RefreshControl
+              refreshing={isLoading}
+              onRefresh={loadContent}
+              tintColor="#E50914"
+              colors={['#E50914']}
+              progressBackgroundColor="#1a1a1a"
+            />
+          }
         >
 
-
           {/* Hero Carousel (Taller for Shorts) */}
+          {slidesToUse.length > 0 && (
           <View style={styles.heroContainer}>
             <ScrollView
               ref={scrollViewRef}
@@ -234,15 +409,15 @@ export default function ShortsScreen() {
               onMomentumScrollEnd={onMomentumScrollEnd}
               scrollEventThrottle={16}
             >
-              {extendedSlides.map((slide) => (
+              {extendedSlides.map((slide, index) => (
                 <TouchableOpacity
-                  key={slide.id}
+                  key={slide.id ? `${slide.id}-${index}` : index}
                   activeOpacity={0.9}
                   style={styles.slide}
                   onPress={() => handlePlayShort(slide.id)}
                 >
                   <Image
-                    source={{ uri: slide.thumbnailUrl || slide.image }}
+                    source={{ uri: slide.thumbnailUrl || slide.posterUrl || slide.image }}
                     style={styles.heroImage}
                     contentFit="cover"
                   />
@@ -280,138 +455,9 @@ export default function ShortsScreen() {
               ))}
             </View>
           </View>
+          )}
 
-          {/* Continue Watching Section */}
-          <View style={styles.sectionContainer}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Continue Watching</Text>
-            </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.listContent}>
-              {CONTINUE_WATCHING.map((item) => (
-                <TouchableOpacity 
-                  key={item.id} 
-                  style={styles.cardContainer} 
-                  activeOpacity={0.7}
-                  onPress={() => handlePlayShort(item.id)}
-                >
-                  <Image
-                    source={{ uri: item.image }}
-                    style={styles.cardImage}
-                    contentFit="cover"
-                  />
-                  {/* Progress Bar Overlay */}
-                  <View style={{
-                    position: 'absolute',
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    height: 4,
-                    backgroundColor: 'rgba(255,255,255,0.3)'
-                  }}>
-                    <View style={{
-                      width: `${item.progress * 100}%`,
-                      height: '100%',
-                      backgroundColor: '#E50914'
-                    }} />
-                  </View>
-
-                   {/* Play Icon Overlay */}
-                   <View style={{
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: [{ translateX: -15 }, { translateY: -15 }],
-                    width: 30,
-                    height: 30,
-                    borderRadius: 15,
-                    backgroundColor: 'rgba(0,0,0,0.6)',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    borderWidth: 1,
-                    borderColor: '#fff'
-                  }}>
-                    <Ionicons name="play" size={16} color="#fff" style={{ marginLeft: 2 }} />
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-
-          {/* Trending Shorts */}
-          <View style={styles.sectionContainer}>
-            <Text style={styles.sectionTitle}>Trending Shorts</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.listContent}>
-              {SHORTS_TRENDING.map((item) => (
-                <TouchableOpacity
-                  key={item.id} 
-                  style={styles.cardContainer} 
-                  activeOpacity={0.7}
-                  onPress={() => handlePlayShort(item.id)}
-                >
-                  <Image source={{ uri: item.image }} style={styles.cardImage} contentFit="cover" />
-                  <LinearGradient
-                    colors={['transparent', 'rgba(0,0,0,0.9)']}
-                    style={styles.cardGradient}
-                  >
-                    <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
-                    <View style={styles.statsRow}>
-                        <Ionicons name="heart" size={12} color="#E50914" />
-                        <Text style={styles.statsText}>{item.likes}</Text>
-                    </View>
-                  </LinearGradient>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-
-          {/* New Shorts */}
-          <View style={styles.sectionContainer}>
-            <Text style={styles.sectionTitle}>New Arrivals</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.listContent}>
-              {SHORTS_NEW.map((item) => (
-                <TouchableOpacity 
-                  key={item.id} 
-                  style={styles.cardContainer} 
-                  activeOpacity={0.7}
-                  onPress={() => handlePlayShort(item.id)}
-                >
-                  <Image source={{ uri: item.image }} style={styles.cardImage} contentFit="cover" />
-                  <View style={styles.newBadge}>
-                    <Text style={styles.newBadgeText}>NEW</Text>
-                  </View>
-                  <LinearGradient
-                    colors={['transparent', 'rgba(0,0,0,0.9)']}
-                    style={styles.cardGradient}
-                  >
-                    <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
-                  </LinearGradient>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-
-          {/* Comedy Shorts */}
-          <View style={styles.sectionContainer}>
-            <Text style={styles.sectionTitle}>Comedy Clips</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.listContent}>
-              {SHORTS_COMEDY.map((item) => (
-                <TouchableOpacity 
-                  key={item.id} 
-                  style={styles.cardContainer} 
-                  activeOpacity={0.7}
-                  onPress={() => handlePlayShort(item.id)}
-                >
-                  <Image source={{ uri: item.image }} style={styles.cardImage} contentFit="cover" />
-                  <LinearGradient
-                    colors={['transparent', 'rgba(0,0,0,0.9)']}
-                    style={styles.cardGradient}
-                  >
-                    <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
-                  </LinearGradient>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
+          {renderDynamicSections()}
 
         </ScrollView>
         

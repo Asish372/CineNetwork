@@ -22,8 +22,10 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
+const { optionalProtect } = require('../middleware/authMiddleware');
+
 // Routes
 router.post('/upload', upload.single('video'), videoController.uploadVideo);
-router.get('/url/:contentId', videoController.getVideoUrl);
+router.get('/url/:contentId', optionalProtect, videoController.getVideoUrl);
 
 module.exports = router;
